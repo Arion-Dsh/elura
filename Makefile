@@ -1,0 +1,26 @@
+.PHONY: fmt check test docs package verify
+
+fmt:
+	cargo fmt --all
+
+check:
+	cargo clippy --workspace --all-targets -- -D warnings
+
+test:
+	cargo test --workspace --all-features
+
+docs:
+	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --lib
+
+package:
+	cargo package -p elura-core --allow-dirty --no-verify
+	cargo package -p elura-runtime --allow-dirty --list
+	cargo package -p elura-gateway --allow-dirty --list
+	cargo package -p elura-world --allow-dirty --list
+	cargo package -p elura-monolith --allow-dirty --list
+	cargo package -p elura-adapters --allow-dirty --list
+	cargo package -p elura-providers --allow-dirty --list
+	cargo package -p elura --allow-dirty --list
+	cargo package -p elura-cli --allow-dirty --list
+
+verify: fmt check test docs package

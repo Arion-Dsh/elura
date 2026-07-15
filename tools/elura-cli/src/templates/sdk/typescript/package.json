@@ -1,0 +1,15 @@
+{
+  "name": "@elura/protocol",
+  "version": "{{ELURA_VERSION}}",
+  "private": true,
+  "type": "module",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node dist/test/golden.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}

@@ -1,0 +1,86 @@
+[package]
+name = "elura-providers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+description = "Identity, notification, OTP, and payment providers for Elura"
+documentation = "https://docs.rs/elura-providers"
+
+[features]
+default = []
+full = [
+    "identity",
+    "notification-alisms",
+    "otp",
+    "payment-alipay",
+    "payment-apple",
+    "payment-douyin",
+    "payment-quicksdk",
+    "payment-wechat-mini",
+    "payment-wechat-pay",
+]
+identity = [
+    "dep:argon2", "dep:base64", "dep:hmac", "dep:rand", "dep:reqwest",
+    "dep:serde_json", "dep:sha2", "dep:subtle", "dep:tokio", "dep:url",
+]
+notification-alisms = [
+    "identity", "dep:chrono", "dep:hex", "dep:sha1",
+]
+otp = ["identity", "dep:hex", "dep:tokio"]
+payment-alipay = [
+    "dep:base64", "dep:chrono", "dep:reqwest", "dep:rsa", "dep:rustls-pemfile",
+    "dep:serde_json", "dep:sha2", "dep:url",
+]
+payment-apple = [
+    "dep:base64", "dep:chrono", "dep:p256", "dep:reqwest", "dep:serde_json",
+    "dep:sha2", "dep:x509-parser",
+]
+payment-douyin = ["dep:hex", "dep:reqwest", "dep:serde_json", "dep:sha1", "dep:subtle", "dep:tokio", "dep:url"]
+payment-quicksdk = [
+    "dep:aes", "dep:base64", "dep:cbc", "dep:md-5", "dep:quick-xml", "dep:serde_json",
+    "dep:sha2", "dep:subtle", "dep:url",
+]
+payment-wechat-mini = [
+    "dep:aes", "dep:base64", "dep:cbc", "dep:hex", "dep:hmac", "dep:serde_json", "dep:sha1",
+    "dep:sha2", "dep:subtle", "dep:tokio", "dep:url",
+]
+payment-wechat-pay = [
+    "dep:aes-gcm", "dep:base64", "dep:chrono", "dep:hex", "dep:rand", "dep:reqwest", "dep:rsa",
+    "dep:serde_json", "dep:sha2", "dep:url",
+]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+argon2 = { workspace = true, optional = true }
+aes = { workspace = true, optional = true }
+aes-gcm = { workspace = true, optional = true }
+async-trait.workspace = true
+base64 = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
+cbc = { workspace = true, optional = true }
+hmac = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
+elura-core.workspace = true
+md-5 = { workspace = true, optional = true }
+p256 = { workspace = true, optional = true }
+quick-xml = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+rsa = { workspace = true, optional = true }
+rustls-pemfile = { workspace = true, optional = true }
+serde.workspace = true
+serde_json = { workspace = true, optional = true }
+sha1 = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+subtle = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
+x509-parser = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio.workspace = true

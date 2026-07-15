@@ -1,0 +1,27 @@
+[package]
+name = "elura-monolith"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+description = "Single-process Gateway and World assembly for Elura"
+documentation = "https://docs.rs/elura-monolith"
+
+[dependencies]
+async-trait.workspace = true
+elura-core.workspace = true
+elura-gateway.workspace = true
+elura-runtime.workspace = true
+elura-world.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+bytes.workspace = true
+futures-util.workspace = true
+tokio-tungstenite.workspace = true
+tokio-util.workspace = true
+uuid.workspace = true

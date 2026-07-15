@@ -1,0 +1,470 @@
+//! WeChat Pay v3 APP checkout, query and authenticated notification handling.
+
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
+use async_trait::async_trait;
+use base64::{Engine, engine::general_purpose::STANDARD};
+use rand::RngCore;
+use reqwest::{Method, Url, header::HeaderMap};
+use rsa::{
+    RsaPrivateKey, RsaPublicKey,
+    pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey},
+    pkcs1v15::{Signature, SigningKey, VerifyingKey},
+    pkcs8::{DecodePrivateKey, DecodePublicKey},
+    signature::{SignatureEncoding, Signer, Verifier},
+};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use sha2::Sha256;
+
+use super::{
+    CheckoutRequest, CheckoutResult, Money, NotificationRequest, Payment, PaymentCapabilities,
+    PaymentEvent, PaymentProvider, PaymentStatus, QueryRequest,
+};
+use crate::{ProviderError, ProviderResult};
+
+const APP_PATH: &str = "/v3/pay/transactions/app";
+const QUERY_PATH: &str = "/v3/pay/transactions/out-trade-no/";
+const QUERY_ID_PATH: &str = "/v3/pay/transactions/id/";
+
+#[derive(Clone)]
+pub struct WechatPayConfig {
+    pub merchant_id: String,
+    pub serial_number: String,
+    pub api_v3_key: String,
+    pub private_key_pem: String,
+    pub app_id: String,
+    /// Provider-owned asynchronous notification endpoint.
+    pub notify_url: String,
+    pub wechat_public_key_pem: String,
+    pub wechat_public_key_id: String,
+    pub base_url: String,
+    pub timeout: Duration,
+}
+
+pub struct WechatPayPayment {
+    merchant_id: String,
+    serial_number: String,
+    api_v3_key: [u8; 32],
+    app_id: String,
+    notify_url: String,
+    public_key_id: String,
+    signing_key: SigningKey<Sha256>,
+    verifying_key: VerifyingKey<Sha256>,
+    base_url: Url,
+    client: reqwest::Client,
+}
+
+impl WechatPayPayment {
+    pub fn new(mut config: WechatPayConfig) -> ProviderResult<Self> {
+        if config.base_url.is_empty() {
+            config.base_url = "https://api.mch.weixin.qq.com/".into();
+        }
+        if config.timeout.is_zero() {
+            config.timeout = Duration::from_secs(10);
+        }
+        let base_url = Url::parse(&config.base_url)
+            .map_err(|error| ProviderError::Config(error.to_string()))?;
+        let local_http = matches!(base_url.host_str(), Some("127.0.0.1" | "localhost"));
+        if base_url.scheme() != "https" && !local_http {
+            return Err(ProviderError::Config(
+                "WeChat Pay endpoint must use HTTPS".into(),
+            ));
+        }
+        if config.merchant_id.trim().is_empty()
+            || config.serial_number.trim().is_empty()
+            || config.app_id.trim().is_empty()
+            || config.notify_url.trim().is_empty()
+            || config.wechat_public_key_id.trim().is_empty()
+            || config.api_v3_key.len() != 32
+        {
+            return Err(ProviderError::Config(
+                "incomplete WeChat Pay v3 configuration".into(),
+            ));
+        }
+        let private_key = RsaPrivateKey::from_pkcs8_pem(&config.private_key_pem)
+            .or_else(|_| RsaPrivateKey::from_pkcs1_pem(&config.private_key_pem))
+            .map_err(|_| ProviderError::Config("invalid merchant RSA private key".into()))?;
+        let public_key = RsaPublicKey::from_public_key_pem(&config.wechat_public_key_pem)
+            .or_else(|_| RsaPublicKey::from_pkcs1_pem(&config.wechat_public_key_pem))
+            .map_err(|_| ProviderError::Config("invalid WeChat RSA public key".into()))?;
+        let api_v3_key = config
+            .api_v3_key
+            .as_bytes()
+            .try_into()
+            .map_err(|_| ProviderError::Config("APIV3 key must be 32 bytes".into()))?;
+        let client = reqwest::Client::builder()
+            .timeout(config.timeout)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|error| ProviderError::Config(error.to_string()))?;
+        Ok(Self {
+            merchant_id: config.merchant_id,
+            serial_number: config.serial_number,
+            api_v3_key,
+            app_id: config.app_id,
+            notify_url: config.notify_url,
+            public_key_id: config.wechat_public_key_id,
+            signing_key: SigningKey::new(private_key),
+            verifying_key: VerifyingKey::new(public_key),
+            base_url,
+            client,
+        })
+    }
+
+    fn nonce() -> String {
+        let mut bytes = [0_u8; 16];
+        rand::rng().fill_bytes(&mut bytes);
+        hex::encode(bytes)
+    }
+
+    fn sign(
+        &self,
+        method: &str,
+        path_and_query: &str,
+        timestamp: u64,
+        nonce: &str,
+        body: &[u8],
+    ) -> String {
+        let message = format!(
+            "{method}\n{path_and_query}\n{timestamp}\n{nonce}\n{}\n",
+            String::from_utf8_lossy(body)
+        );
+        STANDARD.encode(self.signing_key.sign(message.as_bytes()).to_bytes())
+    }
+
+    async fn request<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path_and_query: &str,
+        body: Option<Vec<u8>>,
+    ) -> ProviderResult<T> {
+        let timestamp = unix_seconds()?;
+        let nonce = Self::nonce();
+        let bytes = body.unwrap_or_default();
+        let signature = self.sign(method.as_str(), path_and_query, timestamp, &nonce, &bytes);
+        let authorization = format!(
+            "WECHATPAY2-SHA256-RSA2048 mchid=\"{}\",nonce_str=\"{}\",timestamp=\"{}\",serial_no=\"{}\",signature=\"{}\"",
+            self.merchant_id, nonce, timestamp, self.serial_number, signature
+        );
+        let url = self
+            .base_url
+            .join(path_and_query.trim_start_matches('/'))
+            .map_err(|error| ProviderError::Config(error.to_string()))?;
+        let mut request = self
+            .client
+            .request(method, url)
+            .header("Authorization", authorization)
+            .header("Accept", "application/json");
+        if !bytes.is_empty() {
+            request = request
+                .header("Content-Type", "application/json")
+                .body(bytes);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|_| ProviderError::Unavailable)?;
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = response
+            .bytes()
+            .await
+            .map_err(|_| ProviderError::Unavailable)?;
+        if body.len() > 1024 * 1024 {
+            return Err(ProviderError::InvalidResponse(
+                "WeChat response too large".into(),
+            ));
+        }
+        if !status.is_success() {
+            return Err(ProviderError::Rejected(format!("WeChat Pay HTTP {status}")));
+        }
+        self.verify_http_signature(&headers, &body)?;
+        serde_json::from_slice(&body)
+            .map_err(|_| ProviderError::InvalidResponse("invalid WeChat response".into()))
+    }
+
+    fn verify_http_signature(&self, headers: &HeaderMap, body: &[u8]) -> ProviderResult<()> {
+        let timestamp = header(headers, "Wechatpay-Timestamp")?;
+        let nonce = header(headers, "Wechatpay-Nonce")?;
+        let signature = header(headers, "Wechatpay-Signature")?;
+        if headers
+            .get("Wechatpay-Serial")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|serial| serial != self.public_key_id)
+        {
+            return Err(ProviderError::InvalidSignature);
+        }
+        let signature = STANDARD
+            .decode(signature)
+            .map_err(|_| ProviderError::InvalidSignature)?;
+        let signature = Signature::try_from(signature.as_slice())
+            .map_err(|_| ProviderError::InvalidSignature)?;
+        let message = format!("{timestamp}\n{nonce}\n{}\n", String::from_utf8_lossy(body));
+        self.verifying_key
+            .verify(message.as_bytes(), &signature)
+            .map_err(|_| ProviderError::InvalidSignature)
+    }
+
+    fn app_payload(&self, prepay_id: &str) -> ProviderResult<String> {
+        let timestamp = unix_seconds()?;
+        let nonce = Self::nonce();
+        let package = format!("Sign=WXPay&prepayid={prepay_id}");
+        let message = format!("{}\n{timestamp}\n{nonce}\n{package}\n", self.app_id);
+        let signature = STANDARD.encode(self.signing_key.sign(message.as_bytes()).to_bytes());
+        Ok(serde_json::json!({
+            "appid": self.app_id, "partnerid": self.merchant_id, "prepayid": prepay_id,
+            "package": "Sign=WXPay", "noncestr": nonce, "timestamp": timestamp.to_string(),
+            "sign": signature
+        })
+        .to_string())
+    }
+}
+
+#[derive(Serialize)]
+struct CreateBody<'a> {
+    appid: &'a str,
+    mchid: &'a str,
+    description: &'a str,
+    out_trade_no: &'a str,
+    notify_url: &'a str,
+    amount: CreateAmount<'a>,
+}
+
+#[derive(Serialize)]
+struct CreateAmount<'a> {
+    total: i64,
+    currency: &'a str,
+}
+
+#[derive(Deserialize)]
+struct CreateResponse {
+    prepay_id: String,
+}
+
+#[async_trait]
+impl PaymentProvider for WechatPayPayment {
+    fn name(&self) -> &str {
+        "wechatpay"
+    }
+
+    fn capabilities(&self) -> PaymentCapabilities {
+        PaymentCapabilities {
+            checkout: true,
+            query: true,
+            notification: true,
+            ..Default::default()
+        }
+    }
+
+    async fn create(&self, request: CheckoutRequest) -> ProviderResult<CheckoutResult> {
+        request.amount.validate()?;
+        if request.amount.currency != "CNY"
+            || request.merchant_order_id.trim().is_empty()
+            || request.subject.trim().is_empty()
+        {
+            return Err(ProviderError::Rejected(
+                "invalid WeChat Pay checkout".into(),
+            ));
+        }
+        let body = serde_json::to_vec(&CreateBody {
+            appid: &self.app_id,
+            mchid: &self.merchant_id,
+            description: &request.subject,
+            out_trade_no: &request.merchant_order_id,
+            notify_url: &self.notify_url,
+            amount: CreateAmount {
+                total: request.amount.minor_units,
+                currency: "CNY",
+            },
+        })
+        .map_err(|_| ProviderError::Unavailable)?;
+        let response: CreateResponse = self.request(Method::POST, APP_PATH, Some(body)).await?;
+        if response.prepay_id.is_empty() {
+            return Err(ProviderError::InvalidResponse("empty prepay id".into()));
+        }
+        Ok(CheckoutResult {
+            provider_order_id: Some(response.prepay_id.clone()),
+            client_payload: self.app_payload(&response.prepay_id)?,
+            expires_at: SystemTime::now().checked_add(Duration::from_secs(7200)),
+        })
+    }
+
+    async fn query(&self, request: QueryRequest) -> ProviderResult<Payment> {
+        let (prefix, order) = match (
+            request
+                .merchant_order_id
+                .filter(|value| !value.trim().is_empty()),
+            request
+                .provider_order_id
+                .filter(|value| !value.trim().is_empty()),
+        ) {
+            (Some(order), _) => (QUERY_PATH, order),
+            (None, Some(order)) => (QUERY_ID_PATH, order),
+            _ => return Err(ProviderError::Rejected("an order id is required".into())),
+        };
+        let escaped = url::form_urlencoded::byte_serialize(order.as_bytes()).collect::<String>();
+        let path = format!("{prefix}{escaped}?mchid={}", self.merchant_id);
+        let response: QueryResponse = self.request(Method::GET, &path, None).await?;
+        response.into_payment()
+    }
+
+    async fn verify_notification(
+        &self,
+        request: NotificationRequest,
+    ) -> ProviderResult<PaymentEvent> {
+        request.validate()?;
+        let mut headers = HeaderMap::new();
+        for (name, value) in request.headers {
+            let name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                .map_err(|_| ProviderError::InvalidSignature)?;
+            let value = reqwest::header::HeaderValue::from_str(&value)
+                .map_err(|_| ProviderError::InvalidSignature)?;
+            headers.insert(name, value);
+        }
+        self.verify_http_signature(&headers, &request.body)?;
+        let envelope: NotificationEnvelope = serde_json::from_slice(&request.body)
+            .map_err(|_| ProviderError::InvalidResponse("invalid WeChat notification".into()))?;
+        if envelope.resource.nonce.len() != 12 {
+            return Err(ProviderError::InvalidResponse(
+                "invalid WeChat nonce".into(),
+            ));
+        }
+        let cipher = Aes256Gcm::new_from_slice(&self.api_v3_key)
+            .map_err(|_| ProviderError::Config("invalid APIV3 key".into()))?;
+        let encrypted = STANDARD
+            .decode(&envelope.resource.ciphertext)
+            .map_err(|_| ProviderError::InvalidResponse("invalid ciphertext".into()))?;
+        let plain = cipher
+            .decrypt(
+                Nonce::from_slice(envelope.resource.nonce.as_bytes()),
+                aes_gcm::aead::Payload {
+                    msg: &encrypted,
+                    aad: envelope.resource.associated_data.as_bytes(),
+                },
+            )
+            .map_err(|_| ProviderError::InvalidSignature)?;
+        let result: QueryResponse = serde_json::from_slice(&plain)
+            .map_err(|_| ProviderError::InvalidResponse("invalid decrypted payment".into()))?;
+        if result.appid != self.app_id || result.mchid != self.merchant_id {
+            return Err(ProviderError::InvalidResponse(
+                "notification identity mismatch".into(),
+            ));
+        }
+        let payment = result.into_payment()?;
+        Ok(PaymentEvent {
+            event_id: envelope.id,
+            merchant_order_id: payment.merchant_order_id,
+            provider_order_id: payment.provider_order_id,
+            original_provider_order_id: None,
+            payer_id: payment.payer_id,
+            product_id: None,
+            quantity: 1,
+            status: payment.status,
+            amount: payment.amount,
+            environment: None,
+            occurred_at: payment.paid_at,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+struct QueryResponse {
+    appid: String,
+    mchid: String,
+    out_trade_no: String,
+    transaction_id: String,
+    trade_state: String,
+    amount: QueryAmount,
+    #[serde(default)]
+    success_time: Option<String>,
+    #[serde(default)]
+    payer: Option<Payer>,
+}
+
+#[derive(Deserialize)]
+struct QueryAmount {
+    total: i64,
+    currency: String,
+}
+
+#[derive(Deserialize)]
+struct Payer {
+    openid: String,
+}
+
+impl QueryResponse {
+    fn into_payment(self) -> ProviderResult<Payment> {
+        let amount = Money {
+            currency: self.amount.currency,
+            minor_units: self.amount.total,
+        };
+        amount.validate()?;
+        if amount.currency != "CNY" {
+            return Err(ProviderError::InvalidResponse(
+                "WeChat payment currency mismatch".into(),
+            ));
+        }
+        Ok(Payment {
+            merchant_order_id: self.out_trade_no,
+            provider_order_id: self.transaction_id,
+            status: map_status(&self.trade_state),
+            amount,
+            paid_at: self
+                .success_time
+                .and_then(|value| chrono::DateTime::parse_from_rfc3339(&value).ok())
+                .map(SystemTime::from),
+            payer_id: self.payer.map(|payer| payer.openid),
+        })
+    }
+}
+
+#[derive(Deserialize)]
+struct NotificationEnvelope {
+    id: String,
+    resource: EncryptedResource,
+}
+
+#[derive(Deserialize)]
+struct EncryptedResource {
+    associated_data: String,
+    nonce: String,
+    ciphertext: String,
+}
+
+fn unix_seconds() -> ProviderResult<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|_| ProviderError::Unavailable)
+}
+
+fn header<'a>(headers: &'a HeaderMap, name: &str) -> ProviderResult<&'a str> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+        .ok_or(ProviderError::InvalidSignature)
+}
+
+fn map_status(value: &str) -> PaymentStatus {
+    match value {
+        "SUCCESS" => PaymentStatus::Succeeded,
+        "REFUND" => PaymentStatus::Refunded,
+        "CLOSED" | "REVOKED" => PaymentStatus::Closed,
+        "PAYERROR" => PaymentStatus::Failed,
+        _ => PaymentStatus::Pending,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn all_wechat_terminal_states_are_mapped() {
+        assert_eq!(map_status("SUCCESS"), PaymentStatus::Succeeded);
+        assert_eq!(map_status("REFUND"), PaymentStatus::Refunded);
+        assert_eq!(map_status("REVOKED"), PaymentStatus::Closed);
+        assert_eq!(map_status("PAYERROR"), PaymentStatus::Failed);
+    }
+}

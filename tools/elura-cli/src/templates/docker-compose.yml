@@ -1,0 +1,33 @@
+services:
+  gateway:
+    image: ${ELURA_IMAGE:-elura-game:dev}
+    command: ["/app/gateway"]
+    environment:
+      APP_GATEWAY_ADDR: 0.0.0.0:17000
+      APP_GATEWAY_ADMIN_ADDR: 0.0.0.0:17001
+      APP_GATEWAY_CONFIG: /etc/elura/gateway.json
+      APP_TICKET_KEY: ${APP_TICKET_KEY:?set APP_TICKET_KEY}
+      APP_INTERNAL_TOKEN: ${APP_INTERNAL_TOKEN:?set APP_INTERNAL_TOKEN}
+      APP_ADMIN_TOKEN: ${APP_ADMIN_TOKEN:?set APP_ADMIN_TOKEN}
+    ports:
+      - "17000:17000"
+      - "17001:17001"
+    volumes:
+      - ../config/gateway.json:/etc/elura/gateway.json:ro
+    depends_on:
+      world:
+        condition: service_started
+
+  world:
+    image: ${ELURA_IMAGE:-elura-game:dev}
+    command: ["/app/world"]
+    environment:
+      APP_WORLD_LISTEN: 0.0.0.0:18000
+      APP_WORLD_CONFIG: /etc/elura/world.json
+      APP_WORLD_ADMIN_ADDR: 0.0.0.0:18001
+      APP_INTERNAL_TOKEN: ${APP_INTERNAL_TOKEN:?set APP_INTERNAL_TOKEN}
+      APP_ADMIN_TOKEN: ${APP_ADMIN_TOKEN:?set APP_ADMIN_TOKEN}
+    ports:
+      - "18001:18001"
+    volumes:
+      - ../config/world.json:/etc/elura/world.json:ro

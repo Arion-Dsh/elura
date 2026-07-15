@@ -1,0 +1,93 @@
+name: ci
+
+permissions:
+  contents: read
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: elura
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d elura"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: elura
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      ELURA_REQUIRE_EXTERNAL_STORES: "1"
+      ELURA_TEST_REDIS_URL: redis://127.0.0.1:6379/
+      ELURA_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/elura
+      ELURA_TEST_MYSQL_URL: mysql://root:root@127.0.0.1:3306/elura
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo check -p elura --no-default-features
+      - run: cargo check -p elura --all-features
+      - run: cargo check -p elura-adapters --no-default-features
+      - run: cargo check -p elura-adapters --no-default-features --features redis
+      - run: cargo check -p elura-adapters --no-default-features --features sql
+      - run: cargo check -p elura-adapters --no-default-features --features kubernetes
+      - run: cargo check -p elura-providers --no-default-features
+      - run: cargo check -p elura-providers --no-default-features --features identity
+      - run: cargo check -p elura-providers --no-default-features --features payment-alipay
+      - run: cargo test --workspace --all-features
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --lib
+      - run: cargo package -p elura-core --allow-dirty --no-verify
+      # Before the first release, dependent packages cannot resolve the still
+      # unpublished elura-core from crates.io. --list still validates their
+      # package manifests and included file sets; release.yml packages/publishes
+      # them in dependency order.
+      - run: cargo package -p elura-runtime --allow-dirty --list
+      - run: cargo package -p elura-adapters --allow-dirty --list
+      - run: cargo package -p elura-providers --allow-dirty --list
+      - run: cargo package -p elura --allow-dirty --list
+
+  security-audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

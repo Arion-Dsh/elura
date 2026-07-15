@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package elura.protocol.v2;
+
+// Framework control delivered as a Push on reserved route 4.
+message SessionControl {
+  enum Action {
+    ACTION_UNSPECIFIED = 0;
+    KICK = 1;
+    ACCOUNT_VERSION_CHANGED = 2;
+    DUPLICATE_LOGIN = 3;
+    FORCE_LOGOUT = 4;
+    SERVER_DRAINING = 5;
+  }
+
+  Action action = 1;
+  string reason = 2;
+}

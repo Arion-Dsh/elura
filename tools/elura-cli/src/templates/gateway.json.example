@@ -1,0 +1,27 @@
+{
+  "runtime": {
+    "gateway": {
+      "listen": "127.0.0.1:17000"
+    },
+    "ticket": {
+      "issuer": "game-login",
+      "audience": "game-gateway"
+    },
+    "admin": {
+      "listen": "127.0.0.1:17001",
+      "component": "gateway",
+      "instance_id": "gateway-1"
+    },
+    "world_routing": {
+      "pool_size": 1,
+      "max_in_flight_per_connection": 64
+    }
+  },
+  "discovery": {
+    "endpoint": "world:18000",
+    "region_id": 1,
+    "realm_id": 1,
+    "route": 0,
+    "refresh_interval": { "secs": 5, "nanos": 0 }
+  }
+}

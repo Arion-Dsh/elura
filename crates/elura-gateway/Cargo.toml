@@ -1,0 +1,36 @@
+[package]
+name = "elura-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+description = "Client-facing Gateway runtime for Elura"
+documentation = "https://docs.rs/elura-gateway"
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+async-trait.workspace = true
+axum.workspace = true
+bytes.workspace = true
+elura-core.workspace = true
+elura-runtime.workspace = true
+futures-util.workspace = true
+ipnet.workspace = true
+quinn.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+socket2.workspace = true
+subtle.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio-tungstenite.workspace = true

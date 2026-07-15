@@ -1,0 +1,16 @@
+use elura::world::{WorldBuilder, WorldContext};
+use elura::Result;
+
+use crate::proto::{{MODULE}}::v2::{{TYPE}}Request;
+use crate::proto::{{MODULE}}::v2::{{TYPE}}Response;
+
+pub const ROUTE_{{ROUTE_CONST}}: u32 = {{ROUTE_ID}};
+
+pub fn register(builder: &mut WorldBuilder) -> Result<()> {
+    builder.register_handler(ROUTE_{{ROUTE_CONST}}, handle)?;
+    Ok(())
+}
+
+async fn handle(_context: WorldContext, _request: {{TYPE}}Request) -> Result<{{TYPE}}Response> {
+    Ok({{TYPE}}Response::default())
+}

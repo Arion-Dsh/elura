@@ -1,0 +1,40 @@
+# Rust build artifacts
+**/target/
+
+# JavaScript / TypeScript build artifacts
+**/node_modules/
+**/dist/
+**/coverage/
+
+# Local environment and secret files
+.env
+.env.*
+!.env.example
+!*.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Public test fixtures required by the QUIC transport tests
+!crates/elura-gateway/src/transport/testdata/*.pem
+
+# Logs, process files, and profiling output
+*.log
+*.pid
+*.profraw
+*.profdata
+perf.data*
+
+# Editor and IDE state
+.idea/
+.vscode/
+.fleet/
+*.iml
+*.swp
+*.swo
+*~
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db

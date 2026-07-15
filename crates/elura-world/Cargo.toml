@@ -1,0 +1,34 @@
+[package]
+name = "elura-world"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+description = "World command runtime for Elura"
+documentation = "https://docs.rs/elura-world"
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+elura-core.workspace = true
+elura-runtime.workspace = true
+futures-util.workspace = true
+prost.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "world_command"
+harness = false

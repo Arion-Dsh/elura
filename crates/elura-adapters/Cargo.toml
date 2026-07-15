@@ -1,0 +1,50 @@
+[package]
+name = "elura-adapters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+description = "Redis, SQL, and Kubernetes adapters for Elura"
+documentation = "https://docs.rs/elura-adapters"
+
+[features]
+default = []
+full = ["redis", "sql", "kubernetes", "admin"]
+redis = [
+    "dep:hex", "dep:redis", "dep:serde_json", "dep:elura-gateway", "dep:elura-world",
+]
+sql = ["dep:sqlx", "dep:serde_json"]
+kubernetes = [
+    "dep:chrono",
+    "dep:k8s-openapi",
+    "dep:kube",
+    "dep:tokio-util",
+    "dep:elura-gateway",
+]
+admin = ["dep:axum", "dep:chrono", "dep:serde_json"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+async-trait.workspace = true
+axum = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
+futures-util.workspace = true
+hex = { workspace = true, optional = true }
+elura-core.workspace = true
+elura-gateway = { workspace = true, optional = true }
+elura-runtime.workspace = true
+elura-world = { workspace = true, optional = true }
+k8s-openapi = { workspace = true, optional = true }
+kube = { workspace = true, optional = true }
+redis = { workspace = true, optional = true }
+serde.workspace = true
+serde_json = { workspace = true, optional = true }
+sqlx = { workspace = true, optional = true }
+tokio.workspace = true
+tokio-util = { workspace = true, optional = true }
+tracing.workspace = true
+uuid.workspace = true

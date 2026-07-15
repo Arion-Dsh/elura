@@ -1,0 +1,57 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: elura-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: gateway
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 17000
+    - ports:
+        - protocol: TCP
+          port: 17001
+  egress:
+    # Allow the generated DNS World discovery to resolve the headless Service.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app: world
+      ports:
+        - protocol: TCP
+          port: 18000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: elura-world
+spec:
+  podSelector:
+    matchLabels:
+      app: world
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway
+      ports:
+        - protocol: TCP
+          port: 18000
+    - ports:
+        - protocol: TCP
+          port: 18001
+  egress:
+    - {}

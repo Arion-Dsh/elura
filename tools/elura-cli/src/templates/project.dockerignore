@@ -1,0 +1,5 @@
+target
+.git
+.env
+config/elura.env
+deploy/kubernetes/secret.yaml

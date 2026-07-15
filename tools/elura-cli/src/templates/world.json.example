@@ -1,0 +1,16 @@
+{
+  "runtime": {
+    "world": {
+      "listen": "127.0.0.1:18000"
+    },
+    "admin": {
+      "listen": "127.0.0.1:18001",
+      "component": "world",
+      "instance_id": "world-1"
+    }
+  },
+  "profile": {
+    "display_name_prefix": "Player-",
+    "welcome_message": "Welcome to the world."
+  }
+}

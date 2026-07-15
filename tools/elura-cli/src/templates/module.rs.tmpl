@@ -1,0 +1,18 @@
+use elura::world::{WorldBuilder, WorldModule};
+use elura::Result;
+
+pub struct {{TYPE}}Module;
+
+impl WorldModule for {{TYPE}}Module {
+    fn name(&self) -> &str {
+        "{{MODULE}}"
+    }
+
+    fn register(&self, builder: &mut WorldBuilder) -> Result<()> {
+        // Declare generated route modules above and call each route's
+        // register function here, for example:
+        // list_items::register(builder)?;
+        let _ = builder;
+        Ok(())
+    }
+}

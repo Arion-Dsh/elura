@@ -1,0 +1,50 @@
+[package]
+name = "elura"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+description = "Unified facade for the Elura online-game server framework"
+documentation = "https://docs.rs/elura"
+
+[package.metadata.docs.rs]
+all-features = true
+
+[features]
+default = ["gateway", "world"]
+core = ["dep:elura-core"]
+runtime = ["core", "dep:elura-runtime"]
+gateway = ["runtime", "dep:elura-gateway"]
+world = ["runtime", "dep:elura-world"]
+monolith = ["gateway", "world", "dep:elura-monolith"]
+adapters = ["runtime", "dep:elura-adapters"]
+redis = ["adapters", "gateway", "world", "elura-adapters/redis"]
+sql = ["adapters", "elura-adapters/sql"]
+kubernetes = ["adapters", "gateway", "elura-adapters/kubernetes"]
+admin = ["adapters", "elura-adapters/admin"]
+providers = ["core", "dep:elura-providers"]
+identity = ["providers", "elura-providers/identity"]
+notification-alisms = ["providers", "elura-providers/notification-alisms"]
+otp = ["providers", "elura-providers/otp"]
+payment-alipay = ["providers", "elura-providers/payment-alipay"]
+payment-apple = ["providers", "elura-providers/payment-apple"]
+payment-douyin = ["providers", "elura-providers/payment-douyin"]
+payment-quicksdk = ["providers", "elura-providers/payment-quicksdk"]
+payment-wechat-mini = ["providers", "elura-providers/payment-wechat-mini"]
+payment-wechat-pay = ["providers", "elura-providers/payment-wechat-pay"]
+full = [
+    "redis", "sql", "kubernetes", "admin", "identity", "notification-alisms", "otp",
+    "payment-alipay", "payment-apple", "payment-douyin", "payment-quicksdk",
+    "payment-wechat-mini", "payment-wechat-pay",
+]
+
+[dependencies]
+elura-core = { workspace = true, optional = true }
+elura-runtime = { workspace = true, optional = true }
+elura-gateway = { workspace = true, optional = true }
+elura-world = { workspace = true, optional = true }
+elura-monolith = { workspace = true, optional = true }
+elura-adapters = { workspace = true, optional = true, default-features = false }
+elura-providers = { workspace = true, optional = true, default-features = false }

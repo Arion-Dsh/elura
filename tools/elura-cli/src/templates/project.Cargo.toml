@@ -1,0 +1,13 @@
+[package]
+name = "elura-game"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+publish = false
+
+[dependencies]
+prost = "0.14"
+elura = { version = "{{ELURA_VERSION}}", features = ["adapters", "monolith"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }

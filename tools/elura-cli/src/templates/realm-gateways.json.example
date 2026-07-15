@@ -1,0 +1,18 @@
+[
+  {
+    "region_id": 1,
+    "realm_id": 1,
+    "transport": "wss",
+    "host": "r1.game.example.com",
+    "port": 443,
+    "path": "/elr2"
+  },
+  {
+    "region_id": 2,
+    "realm_id": 2,
+    "transport": "wss",
+    "host": "r2.game.example.com",
+    "port": 443,
+    "path": "/elr2"
+  }
+]

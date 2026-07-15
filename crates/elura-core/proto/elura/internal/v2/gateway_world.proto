@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package elura.internal.v2;
+
+// Internal command sent from a Gateway instance to a World instance.
+message GatewayWorldCommand {
+  GatewayWorldIdentity identity = 1;
+  string session_id = 2;
+  string trace_id = 3;
+  uint64 request_id = 4;
+  bytes payload = 5;
+  optional string authorization = 6;
+  optional uint32 shard_id = 7;
+  optional string owner_id = 8;
+  optional uint64 owner_epoch = 9;
+  uint64 timeout_millis = 10;
+}
+
+message GatewayWorldIdentity {
+  int64 account_id = 1;
+  int64 user_id = 2;
+  uint32 region_id = 3;
+  uint32 realm_id = 4;
+  uint64 generation = 5;
+}

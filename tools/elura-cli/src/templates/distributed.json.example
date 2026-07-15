@@ -1,0 +1,24 @@
+{
+  "key_prefix": "elura",
+  "lease_ttl": { "secs": 45, "nanos": 0 },
+  "renew_interval": { "secs": 15, "nanos": 0 },
+  "duplicate_login": "kick_existing",
+  "push": {
+    "stream": "gateway:push-stream",
+    "group": "",
+    "consumer": "",
+    "max_len": 100000,
+    "claim_idle": { "secs": 30, "nanos": 0 },
+    "read_block": { "secs": 1, "nanos": 0 },
+    "batch_size": 128
+  },
+  "session_control": {
+    "stream": "elura:session:control",
+    "group": "",
+    "consumer": "",
+    "max_len": 100000,
+    "claim_idle": { "secs": 30, "nanos": 0 },
+    "read_block": { "secs": 1, "nanos": 0 },
+    "batch_size": 128
+  }
+}

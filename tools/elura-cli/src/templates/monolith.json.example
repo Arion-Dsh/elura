@@ -1,0 +1,23 @@
+{
+  "runtime": {
+    "gateway": {
+      "listen": "127.0.0.1:17000"
+    },
+    "world": {
+      "handler_timeout": { "secs": 5, "nanos": 0 }
+    },
+    "ticket": {
+      "issuer": "game-login",
+      "audience": "game-gateway"
+    },
+    "admin": {
+      "listen": "127.0.0.1:17001",
+      "component": "monolith",
+      "instance_id": "monolith-1"
+    }
+  },
+  "profile": {
+    "display_name_prefix": "Player-",
+    "welcome_message": "Welcome to the world."
+  }
+}

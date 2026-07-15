@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+spec:
+  # The generated composition root uses an in-memory ticket replay store.
+  # Keep one replica until the upper application explicitly injects a shared store.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: gateway
+          image: elura-game:dev
+          command: ["/app/gateway"]
+          env:
+            - name: APP_GATEWAY_ADDR
+              value: "0.0.0.0:17000"
+            - name: APP_GATEWAY_ADMIN_ADDR
+              value: "0.0.0.0:17001"
+            - name: APP_GATEWAY_CONFIG
+              value: "/etc/elura/gateway.json"
+            - name: APP_TICKET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: elura-secrets
+                  key: ticket-key
+            - name: APP_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: elura-secrets
+                  key: internal-token
+            - name: APP_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: elura-secrets
+                  key: admin-token
+            - name: APP_INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          ports:
+            - name: game
+              containerPort: 17000
+            - name: admin
+              containerPort: 17001
+          readinessProbe:
+            httpGet:
+              path: /elura/readyz
+              port: admin
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /elura/healthz
+              port: admin
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /elura/healthz
+              port: admin
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 2"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          volumeMounts:
+            - name: elura-runtime-config
+              mountPath: /etc/elura
+              readOnly: true
+      volumes:
+        - name: elura-runtime-config
+          configMap:
+            name: elura-runtime-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+spec:
+  selector:
+    app: gateway
+  ports:
+    - name: game
+      port: 17000
+      targetPort: game
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gateway
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: gateway

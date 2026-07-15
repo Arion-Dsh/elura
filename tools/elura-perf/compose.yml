@@ -1,0 +1,77 @@
+name: elura-rs-perf
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: redis-server --save "" --appendonly no
+    restart: unless-stopped
+
+  world:
+    image: elura-rs-perf:dev
+    build:
+      context: ../..
+      dockerfile: tools/elura-perf/Dockerfile
+    command: /app/elura-perf-world
+    environment:
+      ELURA_WORLD_IN_FLIGHT: "64"
+      ELURA_INTERNAL_TOKEN: elura-rs-perf-internal-token-2026
+    restart: unless-stopped
+
+  gateway-1:
+    image: elura-rs-perf:dev
+    command: /app/elura-perf-gateway
+    environment:
+      ELURA_GATEWAY_ID: perf-gateway-1
+      ELURA_REDIS_URL: redis://redis:6379/
+      ELURA_WORLD_ADDRESS: world:18000
+      ELURA_WORLD_POOL_SIZE: "16"
+      ELURA_WORLD_IN_FLIGHT: "64"
+      ELURA_MAX_CONNECTIONS: "12000"
+      ELURA_MAX_CONNECTIONS_PER_IP: "12000"
+      ELURA_IP_REQUEST_RATE: "0"
+      ELURA_IP_REQUEST_BURST: "0"
+      ELURA_INTERNAL_TOKEN: elura-rs-perf-internal-token-2026
+      ELURA_TICKET_KEY: elura-rs-perf-ticket-key-at-least-32-bytes-2026
+    depends_on:
+      - redis
+      - world
+    restart: unless-stopped
+
+  gateway-2:
+    image: elura-rs-perf:dev
+    command: /app/elura-perf-gateway
+    environment:
+      ELURA_GATEWAY_ID: perf-gateway-2
+      ELURA_REDIS_URL: redis://redis:6379/
+      ELURA_WORLD_ADDRESS: world:18000
+      ELURA_WORLD_POOL_SIZE: "16"
+      ELURA_WORLD_IN_FLIGHT: "64"
+      ELURA_MAX_CONNECTIONS: "12000"
+      ELURA_MAX_CONNECTIONS_PER_IP: "12000"
+      ELURA_IP_REQUEST_RATE: "0"
+      ELURA_IP_REQUEST_BURST: "0"
+      ELURA_INTERNAL_TOKEN: elura-rs-perf-internal-token-2026
+      ELURA_TICKET_KEY: elura-rs-perf-ticket-key-at-least-32-bytes-2026
+    depends_on:
+      - redis
+      - world
+    restart: unless-stopped
+
+  load-balancer:
+    image: haproxy:3.2-alpine
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      - gateway-1
+      - gateway-2
+    restart: unless-stopped
+
+  load:
+    image: elura-rs-perf:dev
+    entrypoint: /app/elura-load
+    environment:
+      ELURA_LOAD_TICKET_KEY: elura-rs-perf-ticket-key-at-least-32-bytes-2026
+    depends_on:
+      - load-balancer
+    profiles:
+      - load

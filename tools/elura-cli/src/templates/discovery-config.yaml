@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elura-runtime-config
+data:
+  gateway.json: |
+    {
+      "runtime": {
+        "gateway": { "listen": "0.0.0.0:17000" },
+        "admin": {
+          "listen": "0.0.0.0:17001",
+          "component": "gateway",
+          "instance_id": "gateway-1"
+        },
+        "world_routing": {
+          "pool_size": 1,
+          "max_in_flight_per_connection": 64
+        }
+      },
+      "discovery": {
+        "endpoint": "world.elura.svc.cluster.local:18000",
+        "region_id": 1,
+        "realm_id": 1,
+        "route": 0,
+        "refresh_interval": { "secs": 5, "nanos": 0 }
+      }
+    }
+  world.json: |
+    {
+      "runtime": {
+        "world": { "listen": "0.0.0.0:18000" },
+        "admin": {
+          "listen": "0.0.0.0:18001",
+          "component": "world",
+          "instance_id": "world-1"
+        }
+      },
+      "profile": {
+        "display_name_prefix": "Player-",
+        "welcome_message": "Welcome to the world."
+      }
+    }

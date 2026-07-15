@@ -1,0 +1,58 @@
+use std::{env, fs, sync::Arc};
+
+use elura::adapters::discovery::DnsWorldDiscoveryConfig;
+use elura::prelude::*;
+use serde::Deserialize;
+
+/// Application-owned configuration. Elura never chooses an adapter or reads
+/// this file/environment on the application's behalf.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AppConfig {
+    runtime: GatewayLaunchConfig,
+    discovery: DnsWorldDiscoveryConfig,
+}
+
+impl AppConfig {
+    fn load() -> elura::Result<Self> {
+        let path = env::var("APP_GATEWAY_CONFIG").unwrap_or_else(|_| "config/gateway.json".into());
+        let mut config: Self = serde_json::from_slice(&fs::read(path)?)?;
+        config.runtime.ticket.key = required_env("APP_TICKET_KEY")?;
+        config.runtime.internal_token = required_env("APP_INTERNAL_TOKEN")?;
+        if let Some(value) = optional_env("APP_GATEWAY_ADDR") {
+            config.runtime.gateway.listen = parse_address("APP_GATEWAY_ADDR", &value)?;
+        }
+        if let Some(value) = optional_env("APP_GATEWAY_ADMIN_ADDR") {
+            config.runtime.admin.listen = parse_address("APP_GATEWAY_ADMIN_ADDR", &value)?;
+        }
+        config.runtime.admin.token = optional_env("APP_ADMIN_TOKEN");
+        if let Some(value) = optional_env("APP_INSTANCE_ID") {
+            config.runtime.admin.instance_id = value;
+        }
+        Ok(config)
+    }
+}
+
+#[tokio::main]
+async fn main() -> elura::Result<()> {
+    let app = AppConfig::load()?;
+    let discovery = Arc::new(app.discovery.build()?);
+    GatewayLauncher::new(app.runtime)?
+        .with_world_discovery(discovery)
+        .run()
+        .await
+}
+
+fn required_env(name: &str) -> elura::Result<String> {
+    env::var(name).map_err(|_| elura::Error::InvalidConfig(format!("{name} is required")))
+}
+
+fn optional_env(name: &str) -> Option<String> {
+    env::var(name).ok().filter(|value| !value.trim().is_empty())
+}
+
+fn parse_address(name: &str, value: &str) -> elura::Result<std::net::SocketAddr> {
+    value
+        .parse()
+        .map_err(|_| elura::Error::InvalidConfig(format!("invalid {name}")))
+}
