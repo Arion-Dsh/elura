@@ -5,91 +5,63 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub use elura_core::identity::{
+    IdentityBindingStore, PasswordCredentialStore, Principal, ProviderName, VerifiedIdentity,
+};
+
 use crate::{ProviderError, ProviderResult};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VerifiedIdentity {
-    pub provider: String,
-    pub subject: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub union_id: Option<String>,
-    #[serde(default)]
-    pub attributes: HashMap<String, String>,
-}
-
-impl VerifiedIdentity {
-    pub fn validate(&self) -> ProviderResult<()> {
-        if !valid_provider_name(&self.provider)
-            || self.subject.trim().is_empty()
-            || self.subject.len() > 512
-            || self
-                .union_id
-                .as_ref()
-                .is_some_and(|value| value.len() > 512)
-            || self.attributes.len() > 64
-            || self
-                .attributes
-                .iter()
-                .any(|(key, value)| key.is_empty() || key.len() > 128 || value.len() > 2048)
-        {
-            return Err(ProviderError::InvalidResponse(
-                "invalid verified identity".into(),
-            ));
-        }
-        Ok(())
-    }
+/// Account-creation path supported by an identity provider.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum IdentityRegistrationMode {
+    /// The provider cannot create accounts.
+    #[default]
+    Unsupported,
+    /// [`IdentityBindingStore`] creates the account from an authenticated identity.
+    BindingStore,
+    /// The provider owns an atomic provider-specific registration transaction.
+    ProviderManaged,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Operations implemented by an identity provider.
 pub struct IdentityProviderCapabilities {
+    /// Whether the provider can authenticate a credential for account linking.
     pub link: bool,
-    pub registration: bool,
+    /// Account-creation path supported by the provider.
+    pub registration: IdentityRegistrationMode,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Public provider metadata returned by [`IdentityRegistry::providers`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdentityProviderInfo {
-    pub name: String,
-    pub supports_link: bool,
-    pub supports_registration: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Principal {
-    pub account_id: i64,
-    pub generation: u64,
-}
-
-impl Principal {
-    pub fn validate(&self) -> ProviderResult<()> {
-        if self.account_id <= 0 || self.generation == 0 {
-            Err(ProviderError::InvalidResponse(
-                "invalid account principal".into(),
-            ))
-        } else {
-            Ok(())
-        }
-    }
+    /// Stable normalized provider name.
+    pub name: ProviderName,
+    /// Operations implemented by the provider.
+    pub capabilities: IdentityProviderCapabilities,
 }
 
 #[async_trait]
+/// Object-safe boundary implemented by identity integrations.
 pub trait IdentityProvider: Send + Sync {
+    /// Stable lowercase provider name.
     fn name(&self) -> &str;
+    /// Operations implemented by this provider.
     fn capabilities(&self) -> IdentityProviderCapabilities {
         IdentityProviderCapabilities::default()
     }
+    /// Authenticates a provider-specific JSON credential.
     async fn authenticate(&self, credential: Value) -> ProviderResult<VerifiedIdentity>;
+    /// Authenticates a credential specifically for linking to an existing account.
     async fn authenticate_link(&self, credential: Value) -> ProviderResult<VerifiedIdentity> {
         self.authenticate(credential).await
     }
+    /// Registers a new account using a provider-specific credential.
     async fn register(&self, _credential: Value) -> ProviderResult<Principal> {
         Err(ProviderError::Unsupported)
     }
-}
-
-#[async_trait]
-pub trait AccountStore: Send + Sync {
-    async fn resolve(&self, identity: VerifiedIdentity) -> ProviderResult<Principal>;
-    async fn link(&self, principal: Principal, identity: VerifiedIdentity) -> ProviderResult<()>;
 }
 
 pub type IdentityProviderFactory =
@@ -97,7 +69,7 @@ pub type IdentityProviderFactory =
 
 #[derive(Default)]
 pub struct IdentityRegistry {
-    providers: RwLock<BTreeMap<String, Arc<dyn IdentityProvider>>>,
+    providers: RwLock<BTreeMap<ProviderName, Arc<dyn IdentityProvider>>>,
 }
 
 impl IdentityRegistry {
@@ -113,14 +85,11 @@ impl IdentityRegistry {
         let mut count = 0;
         for value in enabled {
             count += 1;
-            let name = normalize_provider_name(value.as_ref());
-            if !valid_provider_name(&name) {
-                return Err(ProviderError::Config(format!(
-                    "invalid enabled provider {name}"
-                )));
-            }
+            let name = ProviderName::parse(value.as_ref()).map_err(|error| {
+                ProviderError::Config(format!("invalid enabled provider: {error}"))
+            })?;
             let factory = factories
-                .get(&name)
+                .get(name.as_str())
                 .ok_or_else(|| ProviderError::Config(format!("provider {name} has no factory")))?;
             registry.register_arc(factory()?)?;
         }
@@ -137,10 +106,12 @@ impl IdentityRegistry {
     }
 
     pub fn register_arc(&self, provider: Arc<dyn IdentityProvider>) -> ProviderResult<()> {
-        let name = provider.name().to_owned();
-        if !valid_provider_name(&name) || normalize_provider_name(&name) != name {
+        let raw_name = provider.name();
+        let name = ProviderName::parse(raw_name)
+            .map_err(|error| ProviderError::Config(format!("invalid provider name: {error}")))?;
+        if name.as_str() != raw_name {
             return Err(ProviderError::Config(format!(
-                "invalid provider name {name}"
+                "provider name must be normalized: {raw_name}"
             )));
         }
         let mut providers = self
@@ -155,13 +126,13 @@ impl IdentityRegistry {
     }
 
     pub fn provider(&self, name: &str) -> ProviderResult<Arc<dyn IdentityProvider>> {
-        let name = normalize_provider_name(name);
+        let name = ProviderName::parse(name)?;
         self.providers
             .read()
             .map_err(|_| ProviderError::Unavailable)?
             .get(&name)
             .cloned()
-            .ok_or(ProviderError::InvalidCredentials)
+            .ok_or_else(|| ProviderError::UnknownProvider(name.to_string()))
     }
 
     pub fn providers(&self) -> ProviderResult<Vec<IdentityProviderInfo>> {
@@ -174,104 +145,138 @@ impl IdentityRegistry {
                 let capabilities = provider.capabilities();
                 IdentityProviderInfo {
                     name: name.clone(),
-                    supports_link: capabilities.link,
-                    supports_registration: capabilities.registration,
+                    capabilities,
                 }
             })
             .collect())
     }
 
-    pub async fn authenticate(
+    pub async fn authenticate<C: Serialize>(
         &self,
         name: &str,
-        credential: Value,
+        credential: C,
     ) -> ProviderResult<VerifiedIdentity> {
         let provider = self.provider(name)?;
+        let credential = encode_credential(credential)?;
         normalize_identity(provider.name(), provider.authenticate(credential).await?)
     }
 }
 
 pub struct IdentityService {
     registry: Arc<IdentityRegistry>,
-    accounts: Arc<dyn AccountStore>,
+    bindings: Arc<dyn IdentityBindingStore>,
 }
 
 impl IdentityService {
-    pub fn new(registry: Arc<IdentityRegistry>, accounts: Arc<dyn AccountStore>) -> Self {
-        Self { registry, accounts }
+    pub fn new(registry: Arc<IdentityRegistry>, bindings: Arc<dyn IdentityBindingStore>) -> Self {
+        Self { registry, bindings }
     }
 
-    pub async fn login(&self, provider_name: &str, credential: Value) -> ProviderResult<Principal> {
+    pub async fn login<C: Serialize>(
+        &self,
+        provider_name: &str,
+        credential: C,
+    ) -> ProviderResult<Principal> {
         let identity = self
             .registry
             .authenticate(provider_name, credential)
             .await?;
-        let principal = self.accounts.resolve(identity).await?;
-        principal.validate()?;
+        let principal = self
+            .bindings
+            .find_account(&identity)
+            .await
+            .map_err(binding_error)?
+            .ok_or(ProviderError::InvalidCredentials)?;
+        principal
+            .validate()
+            .map_err(|error| ProviderError::InvalidResponse(error.to_string()))?;
         Ok(principal)
     }
 
-    pub async fn register(
+    pub async fn register<C: Serialize>(
         &self,
         provider_name: &str,
-        credential: Value,
+        credential: C,
     ) -> ProviderResult<Principal> {
         let provider = self.registry.provider(provider_name)?;
-        if !provider.capabilities().registration {
-            return Err(ProviderError::Unsupported);
-        }
-        let principal = provider.register(credential).await?;
-        principal.validate()?;
+        let credential = encode_credential(credential)?;
+        let principal = match provider.capabilities().registration {
+            IdentityRegistrationMode::Unsupported => return Err(ProviderError::Unsupported),
+            IdentityRegistrationMode::BindingStore => {
+                let identity =
+                    normalize_identity(provider.name(), provider.authenticate(credential).await?)?;
+                self.bindings
+                    .create_account(identity)
+                    .await
+                    .map_err(binding_error)?
+            }
+            IdentityRegistrationMode::ProviderManaged => provider.register(credential).await?,
+        };
+        principal
+            .validate()
+            .map_err(|error| ProviderError::InvalidResponse(error.to_string()))?;
         Ok(principal)
     }
 
-    pub async fn link(
+    pub async fn link<C: Serialize>(
         &self,
         principal: Principal,
         provider_name: &str,
-        credential: Value,
+        credential: C,
     ) -> ProviderResult<()> {
-        principal.validate()?;
+        principal
+            .validate()
+            .map_err(|error| ProviderError::InvalidRequest(error.to_string()))?;
         let provider = self.registry.provider(provider_name)?;
+        if !provider.capabilities().link {
+            return Err(ProviderError::Unsupported);
+        }
+        let credential = encode_credential(credential)?;
         let identity = normalize_identity(
             provider.name(),
             provider.authenticate_link(credential).await?,
         )?;
-        self.accounts.link(principal, identity).await
+        self.bindings
+            .link(principal, identity)
+            .await
+            .map_err(binding_error)
     }
+}
+
+fn encode_credential<C: Serialize>(credential: C) -> ProviderResult<Value> {
+    serde_json::to_value(credential)
+        .map_err(|error| ProviderError::InvalidRequest(format!("invalid credential: {error}")))
 }
 
 fn normalize_identity(
     provider: &str,
     mut identity: VerifiedIdentity,
 ) -> ProviderResult<VerifiedIdentity> {
-    if identity.provider.is_empty() {
-        identity.provider = provider.into();
-    }
     identity.subject = identity.subject.trim().to_owned();
     identity.union_id = identity
         .union_id
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty());
-    if identity.provider != provider {
+    if identity.provider.as_str() != provider {
         return Err(ProviderError::InvalidResponse(
             "provider identity mismatch".into(),
         ));
     }
-    identity.validate()?;
+    identity
+        .validate()
+        .map_err(|error| ProviderError::InvalidResponse(error.to_string()))?;
     Ok(identity)
 }
 
-fn normalize_provider_name(value: &str) -> String {
-    value.trim().to_ascii_lowercase()
-}
-
-fn valid_provider_name(value: &str) -> bool {
-    (1..=32).contains(&value.len())
-        && value.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
-        && value.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'-'
-        })
+fn binding_error(error: elura_core::Error) -> ProviderError {
+    match error {
+        elura_core::Error::Authentication => ProviderError::InvalidCredentials,
+        elura_core::Error::RateLimited => ProviderError::RateLimited { retry_after: None },
+        elura_core::Error::Unavailable | elura_core::Error::Timeout | elura_core::Error::Io(_) => {
+            ProviderError::Unavailable
+        }
+        _ => ProviderError::Rejected("identity binding operation failed".into()),
+    }
 }
 
 #[cfg(test)]
@@ -287,12 +292,12 @@ mod tests {
         fn capabilities(&self) -> IdentityProviderCapabilities {
             IdentityProviderCapabilities {
                 link: true,
-                registration: false,
+                registration: IdentityRegistrationMode::BindingStore,
             }
         }
         async fn authenticate(&self, _credential: Value) -> ProviderResult<VerifiedIdentity> {
             Ok(VerifiedIdentity {
-                provider: "test".into(),
+                provider: ProviderName::parse("test")?,
                 subject: "subject".into(),
                 union_id: None,
                 attributes: HashMap::new(),
@@ -300,11 +305,52 @@ mod tests {
         }
     }
 
+    struct NonLinkProvider;
+    #[async_trait]
+    impl IdentityProvider for NonLinkProvider {
+        fn name(&self) -> &str {
+            "non_link"
+        }
+
+        async fn authenticate(&self, _credential: Value) -> ProviderResult<VerifiedIdentity> {
+            unreachable!("link capability must be checked before authentication")
+        }
+    }
+
+    struct Accounts;
+    #[async_trait]
+    impl IdentityBindingStore for Accounts {
+        async fn find_account(
+            &self,
+            _identity: &VerifiedIdentity,
+        ) -> elura_core::Result<Option<Principal>> {
+            unreachable!()
+        }
+
+        async fn create_account(
+            &self,
+            _identity: VerifiedIdentity,
+        ) -> elura_core::Result<Principal> {
+            Ok(Principal {
+                account_id: 7,
+                generation: 1,
+            })
+        }
+
+        async fn link(
+            &self,
+            _principal: Principal,
+            _identity: VerifiedIdentity,
+        ) -> elura_core::Result<()> {
+            unreachable!()
+        }
+    }
+
     #[tokio::test]
     async fn registry_reports_capabilities_and_authenticates() {
         let registry = IdentityRegistry::new();
         registry.register(Provider).unwrap();
-        assert!(registry.providers().unwrap()[0].supports_link);
+        assert!(registry.providers().unwrap()[0].capabilities.link);
         assert_eq!(
             registry
                 .authenticate(" TEST ", Value::Null)
@@ -313,5 +359,32 @@ mod tests {
                 .subject,
             "subject"
         );
+    }
+
+    #[tokio::test]
+    async fn service_enforces_link_capability() {
+        let registry = Arc::new(IdentityRegistry::new());
+        registry.register(NonLinkProvider).unwrap();
+        let service = IdentityService::new(registry, Arc::new(Accounts));
+        let result = service
+            .link(
+                Principal {
+                    account_id: 1,
+                    generation: 1,
+                },
+                "non_link",
+                Value::Null,
+            )
+            .await;
+        assert!(matches!(result, Err(ProviderError::Unsupported)));
+    }
+
+    #[tokio::test]
+    async fn binding_store_registration_creates_account() {
+        let registry = Arc::new(IdentityRegistry::new());
+        registry.register(Provider).unwrap();
+        let service = IdentityService::new(registry, Arc::new(Accounts));
+        let principal = service.register("test", Value::Null).await.unwrap();
+        assert_eq!(principal.account_id, 7);
     }
 }

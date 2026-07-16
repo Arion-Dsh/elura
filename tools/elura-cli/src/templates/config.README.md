@@ -26,20 +26,23 @@ or secrets, and it does not install Redis components automatically. Applications
 2. The application reads configuration and secrets, then passes sensitive values to the relevant
    configuration objects.
 3. Each adapter is constructed from its own configuration.
-4. The application injects components through the launchers' explicit `with_*` methods. Gateway
-   deployments may bundle related services with `GatewayInfrastructure`.
+4. The application injects components through the fluent `Gateway` and `World` APIs. Reusable
+   infrastructure composition modules may bundle related services with `GatewayInfrastructure`;
+   normal application startup should use the fluent methods directly.
 
-The generated Gateway example uses `DnsWorldDiscoveryConfig::build()`. For Kubernetes, construct
-`KubernetesWorldDiscovery::new(EndpointWatcherConfig { ... })`. For VMs or bare-metal deployments,
-use `RedisWorldDiscoveryConfig` and `RedisWorldRegistrationConfig`. Provider selection belongs to
-the application; `GatewayLaunchConfig` only contains the `world_routing` connection-pool settings.
+The generated Gateway example uses `DnsWorldDiscovery::new(config)`. For Kubernetes, construct
+`KubernetesWorldDiscovery::new(EndpointWatcherConfig { ... })?`. For VMs or bare-metal deployments,
+use `RedisWorldDiscovery::connect(redis_url, config)` and
+`RedisWorldRegistrar::connect(redis_url, world_id, config)`. Provider selection belongs to
+the application; `GatewayConfig` contains only protocol-neutral Session and runtime settings.
+TCP, WebSocket, QUIC, and future client protocols own their configuration independently.
 
-To enable the optional QUIC listener, add a `quic` object under `runtime` in `gateway.json` (or
-`monolith.json`) and mount the certificate files into the container:
+To enable the optional QUIC listener, add a top-level `quic` object in `gateway.json` or
+`monolith.json` and mount the certificate files into the container:
 
 ```json
 "quic": {
-  "listen": "0.0.0.0:17002",
+  "listen": "0.0.0.0:17003",
   "certificate_file": "/run/secrets/gateway-cert.pem",
   "key_file": "/run/secrets/gateway-key.pem"
 }
@@ -52,8 +55,8 @@ client-initiated bidirectional stream.
 Redis replay protection, the online directory, push, session control, rate limiting, bans, OTP,
 and the outbox are independent components. Construct and inject only the components the application
 needs. When using Redis Cluster, the application must ensure that related components use compatible
-seeds, prefixes, and deployment constraints. Gateway and World launchers do not start a Redis
-outbox dispatcher automatically.
+seeds, prefixes, and deployment constraints. Gateway and World do not start a Redis outbox
+dispatcher automatically.
 
 Never commit real secrets. Ticket keys and internal tokens must contain at least 32 bytes and use
 different random values. An admin endpoint listening on a non-loopback address requires a token of

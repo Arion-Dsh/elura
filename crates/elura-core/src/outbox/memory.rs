@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
+use crate::outbox::{
+    DeadLetter, OutboxDelivery, OutboxEvent, OutboxStore, validate_failure_reason,
+};
+use crate::{Error, Result};
 use async_trait::async_trait;
-use elura_core::{Error, Result};
 use uuid::Uuid;
-
-use super::contract::validate_reason;
-use super::{DeadLetter, OutboxDelivery, OutboxEvent, OutboxStore};
 
 #[derive(Clone)]
 struct Entry {
@@ -170,7 +170,7 @@ impl OutboxStore for MemoryOutbox {
         available_at: SystemTime,
         reason: &str,
     ) -> Result<()> {
-        validate_reason(reason)?;
+        validate_failure_reason(reason)?;
         let mut state = self.lock()?;
         let entry = Self::leased(&mut state, delivery)?;
         entry.event.available_at = available_at.max(SystemTime::now());
@@ -182,7 +182,7 @@ impl OutboxStore for MemoryOutbox {
     }
 
     async fn dead_letter(&self, delivery: &OutboxDelivery, reason: &str) -> Result<()> {
-        validate_reason(reason)?;
+        validate_failure_reason(reason)?;
         let mut state = self.lock()?;
         Self::leased(&mut state, delivery)?;
         let entry = state

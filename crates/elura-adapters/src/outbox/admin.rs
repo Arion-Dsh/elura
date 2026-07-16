@@ -9,12 +9,12 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use chrono::{DateTime, Utc};
 use elura_core::Error;
+use elura_core::outbox::OutboxStore;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use super::OutboxStore;
-
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct OutboxAdminConfig {
     pub default_limit: usize,
     pub max_limit: usize,
@@ -130,7 +130,8 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::outbox::{MemoryOutbox, OutboxEvent};
+    use elura_core::outbox::MemoryOutbox;
+    use elura_core::outbox::OutboxEvent;
 
     #[tokio::test]
     async fn lists_and_replays_dead_letters() {

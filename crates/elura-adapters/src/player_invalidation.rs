@@ -5,23 +5,33 @@ use elura_core::{Error, Result};
 use elura_world::player::{InvalidationBus, InvalidationHandler, PlayerInvalidation};
 use futures_util::StreamExt;
 
-use crate::redis::{SubscriptionCounters, SubscriptionStats, reconnect_delay};
+use crate::redis::{
+    RedisConnection, SubscriptionCounters, SubscriptionStats, reconnect_delay,
+    standalone_connection,
+};
 
 pub struct RedisInvalidationBus {
+    connection: RedisConnection,
     client: redis::Client,
     channel: String,
     stats: Arc<SubscriptionCounters>,
 }
 
 impl RedisInvalidationBus {
-    pub fn new(client: redis::Client, channel: impl Into<String>) -> Result<Self> {
+    pub async fn connect(url: &str, channel: impl Into<String>) -> Result<Self> {
+        Self::from_connection(standalone_connection(url).await?, channel)
+    }
+
+    fn from_connection(connection: RedisConnection, channel: impl Into<String>) -> Result<Self> {
         let channel = channel.into();
         if channel.trim().is_empty() {
             return Err(Error::InvalidConfig(
                 "player invalidation channel is empty".into(),
             ));
         }
+        let client = connection.pubsub_client()?;
         Ok(Self {
+            connection,
             client,
             channel,
             stats: Arc::new(SubscriptionCounters::default()),
@@ -37,11 +47,7 @@ impl RedisInvalidationBus {
 impl InvalidationBus for RedisInvalidationBus {
     async fn publish(&self, invalidation: &PlayerInvalidation) -> Result<()> {
         invalidation.validate()?;
-        let mut connection = self
-            .client
-            .get_connection_manager()
-            .await
-            .map_err(redis_error)?;
+        let mut connection = self.connection.clone();
         redis::cmd("PUBLISH")
             .arg(&self.channel)
             .arg(serde_json::to_vec(invalidation)?)

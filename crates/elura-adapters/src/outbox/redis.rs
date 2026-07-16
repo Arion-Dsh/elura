@@ -1,13 +1,14 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use elura_core::outbox::{
+    DeadLetter, OutboxDelivery, OutboxEvent, OutboxStore, validate_failure_reason,
+};
 use elura_core::{Error, Result};
 use redis::Script;
-use redis::aio::ConnectionManager;
 use uuid::Uuid;
 
-use super::contract::validate_reason;
-use super::{DeadLetter, OutboxDelivery, OutboxEvent, OutboxStore};
+use crate::redis::{RedisConnection, standalone_connection, validate_key_prefix};
 
 const ACQUIRE: &str = r#"
 local expired = redis.call('ZRANGEBYSCORE', KEYS[3], '-inf', ARGV[1], 'LIMIT', 0, ARGV[3])
@@ -39,22 +40,19 @@ return result
 
 #[derive(Clone)]
 pub struct RedisOutbox {
-    connection: ConnectionManager,
+    connection: RedisConnection,
     prefix: String,
 }
 
 impl RedisOutbox {
     pub async fn connect(url: &str, prefix: impl Into<String>) -> Result<Self> {
-        let client = redis::Client::open(url).map_err(redis_error)?;
-        let connection = client.get_connection_manager().await.map_err(redis_error)?;
-        Ok(Self::new(connection, prefix))
+        Self::from_connection(standalone_connection(url).await?, prefix)
     }
 
-    pub fn new(connection: ConnectionManager, prefix: impl Into<String>) -> Self {
-        Self {
-            connection,
-            prefix: prefix.into(),
-        }
+    fn from_connection(connection: RedisConnection, prefix: impl Into<String>) -> Result<Self> {
+        let prefix = prefix.into();
+        validate_key_prefix(&prefix)?;
+        Ok(Self { connection, prefix })
     }
 
     fn key(&self, suffix: &str) -> String {
@@ -222,7 +220,7 @@ return 1
         available_at: SystemTime,
         reason: &str,
     ) -> Result<()> {
-        validate_reason(reason)?;
+        validate_failure_reason(reason)?;
         let mut event = delivery.event.clone();
         event.available_at = available_at.max(SystemTime::now());
         let keys = self.keys(&["events", "available", "leases", "lease-info", "errors"]);
@@ -258,7 +256,7 @@ return 1
     }
 
     async fn dead_letter(&self, delivery: &OutboxDelivery, reason: &str) -> Result<()> {
-        validate_reason(reason)?;
+        validate_failure_reason(reason)?;
         let letter = DeadLetter {
             event: delivery.event.clone(),
             attempt: delivery.attempt,

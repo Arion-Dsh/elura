@@ -29,7 +29,12 @@ impl PlayerProfileConfig {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AppConfig {
-    runtime: MonolithLaunchConfig,
+    gateway: GatewayConfig,
+    world: WorldConfig,
+    admin: AdminServerConfig,
+    tcp: TcpConfig,
+    #[serde(default)]
+    quic: Option<QuicConfig>,
     profile: PlayerProfileConfig,
 }
 
@@ -38,16 +43,16 @@ impl AppConfig {
         let path = env::var("APP_MONOLITH_CONFIG")
             .unwrap_or_else(|_| "config/monolith.json".into());
         let mut config: Self = serde_json::from_slice(&fs::read(path)?)?;
-        config.runtime.ticket.key = required_env("APP_TICKET_KEY")?;
+        config.gateway.ticket.key = required_env("APP_TICKET_KEY")?;
         if let Some(value) = optional_env("APP_GATEWAY_ADDR") {
-            config.runtime.gateway.listen = parse_address("APP_GATEWAY_ADDR", &value)?;
+            config.tcp.listen = parse_address("APP_GATEWAY_ADDR", &value)?;
         }
         if let Some(value) = optional_env("APP_GATEWAY_ADMIN_ADDR") {
-            config.runtime.admin.listen = parse_address("APP_GATEWAY_ADMIN_ADDR", &value)?;
+            config.admin.listen = parse_address("APP_GATEWAY_ADMIN_ADDR", &value)?;
         }
-        config.runtime.admin.token = optional_env("APP_ADMIN_TOKEN");
+        config.admin.token = optional_env("APP_ADMIN_TOKEN");
         if let Some(value) = optional_env("APP_INSTANCE_ID") {
-            config.runtime.admin.instance_id = value;
+            config.admin.instance_id = value;
         }
         Ok(config)
     }
@@ -73,10 +78,12 @@ struct GetPlayerProfileResponse {
 #[tokio::main]
 async fn main() -> elura::Result<()> {
     let app = AppConfig::load()?;
-    MonolithLauncher::new(app.runtime)?
-        .configure_world(move |builder| register(builder, app.profile))?
-        .run()
-        .await
+    let tcp = TcpTransport::new(app.tcp)?;
+    let mut monolith = Monolith::new(app.gateway, app.world).transport(tcp);
+    if let Some(quic) = app.quic {
+        monolith = monolith.transport(quic);
+    }
+    register(monolith, app.profile).run(app.admin).await
 }
 
 fn required_env(name: &str) -> elura::Result<String> {
@@ -93,8 +100,8 @@ fn parse_address(name: &str, value: &str) -> elura::Result<std::net::SocketAddr>
         .map_err(|_| elura::Error::InvalidConfig(format!("invalid {name}")))
 }
 
-fn register(builder: &mut WorldBuilder, profile: PlayerProfileConfig) -> elura::Result<()> {
-    builder.register(
+fn register(monolith: Monolith, profile: PlayerProfileConfig) -> Monolith {
+    monolith.route(
         GetPlayerProfile,
         move |context: WorldContext, _request| {
             let profile = profile.clone();
@@ -109,6 +116,5 @@ fn register(builder: &mut WorldBuilder, profile: PlayerProfileConfig) -> elura::
                 })
             }
         },
-    )?;
-    Ok(())
+    )
 }

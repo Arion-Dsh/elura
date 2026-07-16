@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use crate::realtime::{Snapshot, SnapshotPublisher};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PacketKind {
     Keyframe,
     Delta,
@@ -23,6 +24,7 @@ pub struct Packet {
     pub state_hash: StateHash,
 }
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct ReplicationConfig {
     pub keyframe_interval: u64,
     pub max_payload: usize,

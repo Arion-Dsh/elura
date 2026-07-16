@@ -1,4 +1,4 @@
-use elura::world::{WorldBuilder, WorldModule};
+use elura::world::{WorldModule, WorldModuleRegistry};
 use elura::Result;
 
 pub struct {{TYPE}}Module;
@@ -8,11 +8,11 @@ impl WorldModule for {{TYPE}}Module {
         "{{MODULE}}"
     }
 
-    fn register(&self, builder: &mut WorldBuilder) -> Result<()> {
+    fn register(&self, world: &mut WorldModuleRegistry<'_>) -> Result<()> {
         // Declare generated route modules above and call each route's
-        // register function here, for example:
-        // list_items::register(builder)?;
-        let _ = builder;
+        // mount function here, for example:
+        // list_items::mount(world)?;
+        let _ = world;
         Ok(())
     }
 }

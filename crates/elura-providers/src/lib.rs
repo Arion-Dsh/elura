@@ -1,5 +1,4 @@
-//! External identity, OTP and payment integrations.
-
+#![doc = include_str!("../README.md")]
 #![deny(rustdoc::broken_intra_doc_links)]
 
 mod error;
@@ -11,4 +10,5 @@ pub mod notification;
 pub mod otp;
 pub mod payment;
 
+pub use elura_core::identity::ProviderName;
 pub use error::{ProviderError, ProviderResult};

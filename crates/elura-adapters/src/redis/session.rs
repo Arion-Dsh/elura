@@ -13,10 +13,12 @@ use tokio::sync::watch;
 
 use super::{
     RedisConnection, SubscriptionCounters, SubscriptionStats, cluster_connection, reconnect_delay,
+    standalone_connection,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+#[non_exhaustive]
 pub struct RedisSessionControlConfig {
     pub stream: String,
     pub group: String,
@@ -42,30 +44,20 @@ impl Default for RedisSessionControlConfig {
 }
 
 pub struct RedisSessionControlBus {
-    source: RedisSessionConnectionSource,
+    connection: RedisConnection,
     config: RedisSessionControlConfig,
     stats: Arc<SubscriptionCounters>,
 }
 
-enum RedisSessionConnectionSource {
-    Standalone(redis::Client),
-    Cluster(RedisConnection),
-}
-
 impl RedisSessionControlBus {
-    pub fn new(
-        client: redis::Client,
+    pub async fn connect(
+        url: &str,
         gateway_id: impl Into<String>,
         config: RedisSessionControlConfig,
     ) -> Result<Self> {
-        Self::with_source(
-            RedisSessionConnectionSource::Standalone(client),
-            gateway_id,
-            config,
-        )
+        Self::from_connection(standalone_connection(url).await?, gateway_id, config)
     }
 
-    /// Connects Session Control to the same Redis Cluster used by other transport adapters.
     pub async fn connect_cluster<I, S>(
         nodes: I,
         gateway_id: impl Into<String>,
@@ -75,18 +67,15 @@ impl RedisSessionControlBus {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        Self::with_source(
-            RedisSessionConnectionSource::Cluster(cluster_connection(nodes).await?),
-            gateway_id,
-            config,
-        )
+        Self::from_connection(cluster_connection(nodes).await?, gateway_id, config)
     }
 
-    fn with_source(
-        source: RedisSessionConnectionSource,
+    fn from_connection(
+        connection: RedisConnection,
         gateway_id: impl Into<String>,
-        mut config: RedisSessionControlConfig,
+        config: RedisSessionControlConfig,
     ) -> Result<Self> {
+        let mut config = config;
         let gateway_id = gateway_id.into();
         if config.group.is_empty() {
             config.group = format!("elura-session-control-{gateway_id}");
@@ -110,21 +99,14 @@ impl RedisSessionControlBus {
             ));
         }
         Ok(Self {
-            source,
+            connection,
             config,
             stats: Arc::new(SubscriptionCounters::default()),
         })
     }
 
     async fn connection(&self) -> Result<RedisConnection> {
-        match &self.source {
-            RedisSessionConnectionSource::Standalone(client) => client
-                .get_connection_manager()
-                .await
-                .map(RedisConnection::Standalone)
-                .map_err(redis_error),
-            RedisSessionConnectionSource::Cluster(connection) => Ok(connection.clone()),
-        }
+        Ok(self.connection.clone())
     }
 
     pub fn stats(&self) -> SubscriptionStats {

@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 use super::kube_error;
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum LeadershipError {
     InvalidConfig(String),
     Kubernetes(Error),
@@ -35,6 +36,7 @@ impl fmt::Display for LeadershipError {
 impl std::error::Error for LeadershipError {}
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct LeaderElectionConfig {
     pub namespace: String,
     pub region_id: u32,
@@ -47,7 +49,7 @@ pub struct LeaderElectionConfig {
 }
 
 impl LeaderElectionConfig {
-    pub fn with_defaults(
+    pub fn new(
         namespace: impl Into<String>,
         region_id: u32,
         realm_id: u32,
@@ -236,7 +238,7 @@ mod tests {
 
     #[test]
     fn validates_timing_order() {
-        let mut config = LeaderElectionConfig::with_defaults("games", 1, 2, "gateway-a");
+        let mut config = LeaderElectionConfig::new("games", 1, 2, "gateway-a");
         assert!(config.validate().is_ok());
         config.retry_period = config.renew_deadline;
         assert!(config.validate().is_err());

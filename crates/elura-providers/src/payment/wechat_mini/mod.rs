@@ -11,8 +11,8 @@ use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
 use super::{
-    CheckoutRequest, CheckoutResult, Money, NotificationRequest, PaymentCapabilities, PaymentEvent,
-    PaymentProvider, PaymentStatus,
+    CheckoutRequest, CheckoutResult, ClientPayload, Money, NotificationRequest,
+    PaymentCapabilities, PaymentEvent, PaymentProvider, PaymentStatus,
 };
 use crate::{ProviderError, ProviderResult};
 
@@ -20,7 +20,21 @@ type HmacSha256 = Hmac<Sha256>;
 type Aes256CbcDec = cbc::Decryptor<Aes256>;
 const METHOD: &str = "requestMidasPaymentGameItem";
 
+/// Provider-specific options for WeChat Mini Game checkout.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WechatMiniCheckoutOptions {
+    /// WeChat session key used to sign the client payload.
+    pub session_key: String,
+    /// Client platform, normally `android` or `ios`.
+    pub platform: String,
+    /// Opaque application data returned with the payment callback.
+    #[serde(default)]
+    pub attach: Option<String>,
+}
+
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct WechatMiniConfig {
     pub app_id: String,
     pub app_key: String,
@@ -28,6 +42,24 @@ pub struct WechatMiniConfig {
     pub environment: u32,
     pub callback_token: Option<String>,
     pub encoding_aes_key: Option<String>,
+}
+
+impl WechatMiniConfig {
+    /// Creates WeChat Mini Game payment configuration without callback encryption.
+    pub fn new(
+        app_id: impl Into<String>,
+        app_key: impl Into<String>,
+        offer_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            app_id: app_id.into(),
+            app_key: app_key.into(),
+            offer_id: offer_id.into(),
+            environment: 0,
+            callback_token: None,
+            encoding_aes_key: None,
+        }
+    }
 }
 
 pub struct WechatMiniPayment {
@@ -190,9 +222,9 @@ impl PaymentProvider for WechatMiniPayment {
     }
 
     async fn create(&self, request: CheckoutRequest) -> ProviderResult<CheckoutResult> {
-        request.amount.validate()?;
+        request.validate()?;
         if request.amount.currency != "CNY" || request.merchant_order_id.trim().is_empty() {
-            return Err(ProviderError::Rejected(
+            return Err(ProviderError::InvalidRequest(
                 "WeChat Mini requires a positive CNY order".into(),
             ));
         }
@@ -200,37 +232,35 @@ impl PaymentProvider for WechatMiniPayment {
             .product_id
             .as_deref()
             .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| ProviderError::Rejected("product id is required".into()))?;
-        let session_key = request
-            .payer_credential
-            .as_deref()
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| ProviderError::Rejected("payer credential is required".into()))?;
-        let platform = request
-            .client_mode
-            .as_deref()
-            .filter(|value| !value.is_empty())
-            .unwrap_or("android");
+            .ok_or_else(|| ProviderError::InvalidRequest("product id is required".into()))?;
+        let options = request.provider_options::<WechatMiniCheckoutOptions>()?;
+        let session_key = options.session_key.trim();
+        let platform = options.platform.trim();
+        if session_key.is_empty() || session_key.len() > 512 || platform.is_empty() {
+            return Err(ProviderError::InvalidRequest(
+                "WeChat Mini session key and platform are required".into(),
+            ));
+        }
         let sign_data = serde_json::to_string(&SignData {
             mode: "goods",
             offer_id: &self.config.offer_id,
-            buy_quantity: request.quantity.max(1),
+            buy_quantity: request.quantity,
             env: self.config.environment,
             currency_type: "CNY",
             platform,
             product_id,
             goods_price: request.amount.minor_units,
             out_trade_no: &request.merchant_order_id,
-            attach: request.attach.as_deref().unwrap_or_default(),
+            attach: options.attach.as_deref().unwrap_or_default(),
         })
         .map_err(|_| ProviderError::Unavailable)?;
         Ok(CheckoutResult {
             provider_order_id: None,
-            client_payload: serde_json::json!({
+            client_payload: ClientPayload::Json(serde_json::json!({
                 "sign_data": sign_data, "mode": "goods",
                 "pay_sig": hmac_hex(&self.config.app_key, format!("{METHOD}&{sign_data}").as_bytes())?,
                 "signature": hmac_hex(session_key, sign_data.as_bytes())?
-            }).to_string(),
+            })),
             expires_at: None,
         })
     }
@@ -240,7 +270,7 @@ impl PaymentProvider for WechatMiniPayment {
         request: NotificationRequest,
     ) -> ProviderResult<PaymentEvent> {
         request.validate()?;
-        let values = query_values(&request.query);
+        let values = query_values(request.query());
         let mut body = request.body;
         let mut verified = false;
         if let Some(token) = self.config.callback_token.as_deref() {
@@ -264,7 +294,7 @@ impl PaymentProvider for WechatMiniPayment {
                 let envelope: Encrypted = serde_json::from_slice(&body).map_err(|_| {
                     ProviderError::InvalidResponse("invalid encrypted callback".into())
                 })?;
-                body = self.decrypt(&envelope.encrypt)?;
+                body = self.decrypt(&envelope.encrypt)?.into();
             }
         }
         let (decoded, pay_event_verified) = self.decode_callback(&body, 0)?;
@@ -409,7 +439,6 @@ fn nonempty(value: String) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn provider(token: Option<&str>) -> WechatMiniPayment {
         WechatMiniPayment::new(WechatMiniConfig {
@@ -437,13 +466,12 @@ mod tests {
             hmac_hex("0123456789abcdef", format!("{event}&{payload}").as_bytes()).unwrap();
         let body = serde_json::json!({"Event": event, "MiniGame": {"Payload": payload, "PayEventSig": signature}}).to_string().into_bytes();
         let payment = provider
-            .verify_notification(NotificationRequest {
-                method: "POST".into(),
-                path: "/callback".into(),
-                query: String::new(),
-                headers: HashMap::new(),
+            .verify_notification(NotificationRequest::new(
+                http::Method::POST,
+                "/callback".parse().unwrap(),
+                http::HeaderMap::new(),
                 body,
-            })
+            ))
             .await
             .unwrap();
         assert_eq!(payment.merchant_order_id, "merchant-1");

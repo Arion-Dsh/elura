@@ -1,175 +1,190 @@
 //! Single-process Gateway and World assembly.
 
 #![deny(rustdoc::broken_intra_doc_links)]
+#![deny(missing_docs)]
 
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
 
-use elura_core::ticket::ReplayStore;
 use elura_core::{Error, Result};
-use serde::{Deserialize, Serialize};
+use elura_gateway::observability::{
+    AdminDiagnostics, AdminServer, AdmissionAdmin, GatewayAdmin, Readiness,
+};
+use elura_gateway::transport::GatewayTransport;
+use elura_gateway::{Gateway, GatewayConfig, GatewayServer};
+use elura_runtime::observability::{AdminDiagnostics as WorldAdminDiagnostics, AdminServerConfig};
+use elura_world::{
+    Route, World, WorldConfig, WorldContext, WorldDiagnostics, WorldHandler, WorldMiddleware,
+    WorldModule, WorldServer,
+};
 use tokio::task::JoinSet;
 
-use elura_gateway::observability::{AdminDiagnostics, AdmissionAdmin, Readiness};
-use elura_gateway::protection::ProtectionConfig;
-use elura_gateway::transport::{AdmissionController, AdmissionSettings, QuicConfig};
-use elura_gateway::{
-    GatewayExtension, GatewayLaunchConfig, GatewayLauncher, GatewayProxyProtocolLaunchConfig,
-    GatewayRealmAdmissionConfig, GatewayTicketConfig,
-};
-use elura_runtime::launch::{LaunchAdminConfig, ServerTlsFilesConfig};
-use elura_runtime::observability::AdminDiagnostics as WorldAdminDiagnostics;
-use elura_world::{WorldBuilder, WorldConfig, WorldServer};
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct MonolithLaunchConfig {
-    pub gateway: elura_gateway::GatewayConfig,
-    pub world: MonolithWorldConfig,
-    pub ticket: GatewayTicketConfig,
-    pub admin: LaunchAdminConfig,
-    pub protection: Option<ProtectionConfig>,
-    pub tls: Option<ServerTlsFilesConfig>,
-    pub quic: Option<QuicConfig>,
-    pub proxy_protocol: Option<GatewayProxyProtocolLaunchConfig>,
-    pub realm_admission: Option<GatewayRealmAdmissionConfig>,
+/// Application-facing single-process Gateway and World.
+///
+/// Client protocols are explicit: install at least one [`GatewayTransport`]
+/// before building or running the Monolith.
+pub struct Monolith {
+    gateway: Gateway,
+    world: World,
+    admission_admin: Option<Arc<dyn AdmissionAdmin>>,
 }
 
-impl Default for MonolithLaunchConfig {
-    fn default() -> Self {
+impl Monolith {
+    /// Creates a Monolith from the same configurations used by standalone
+    /// Gateway and World processes.
+    ///
+    /// Standalone World networking, authorization and TLS settings are not started.
+    pub fn new(mut gateway: GatewayConfig, mut world: WorldConfig) -> Self {
+        gateway.internal_token = None;
+        gateway.world_tls = None;
+
+        world.internal_token = None;
+        world.tls = None;
+
         Self {
-            gateway: elura_gateway::GatewayConfig::default(),
-            world: MonolithWorldConfig::default(),
-            ticket: GatewayTicketConfig::default(),
-            admin: LaunchAdminConfig {
-                listen: "127.0.0.1:17001".parse().expect("static address"),
-                token: None,
-                component: "monolith".into(),
-                instance_id: "monolith-1".into(),
-            },
-            protection: None,
-            tls: None,
-            quic: None,
-            proxy_protocol: None,
-            realm_admission: None,
+            gateway: Gateway::new(gateway),
+            world: World::new(world),
+            admission_admin: None,
         }
     }
-}
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct MonolithWorldConfig {
-    pub handler_timeout: Duration,
-}
-
-impl Default for MonolithWorldConfig {
-    fn default() -> Self {
-        let world = WorldConfig::default();
-        Self {
-            handler_timeout: world.handler_timeout,
-        }
-    }
-}
-
-impl MonolithWorldConfig {
-    fn runtime_config(&self) -> WorldConfig {
-        WorldConfig {
-            handler_timeout: self.handler_timeout,
-            ..WorldConfig::default()
-        }
-    }
-}
-
-impl MonolithLaunchConfig {
-    fn gateway_launch_config(&self) -> GatewayLaunchConfig {
-        GatewayLaunchConfig {
-            gateway: self.gateway.clone(),
-            ticket: self.ticket.clone(),
-            internal_token: String::new(),
-            admin: self.admin.clone(),
-            protection: self.protection.clone(),
-            tls: self.tls.clone(),
-            world_tls: None,
-            world_routing: Default::default(),
-            quic: self.quic.clone(),
-            proxy_protocol: self.proxy_protocol.clone(),
-            realm_admission: self.realm_admission.clone(),
-        }
-    }
-}
-
-/// Runs Gateway and World in one process with direct in-memory dispatch.
-pub struct MonolithLauncher {
-    gateway: GatewayLauncher,
-    world: WorldBuilder,
-}
-
-impl MonolithLauncher {
-    pub fn new(config: MonolithLaunchConfig) -> Result<Self> {
-        Ok(Self {
-            gateway: GatewayLauncher::new(config.gateway_launch_config())?,
-            world: WorldBuilder::new(config.world.runtime_config())?,
-        })
-    }
-
-    pub fn configure_world(
-        mut self,
-        configure: impl FnOnce(&mut WorldBuilder) -> Result<()>,
-    ) -> Result<Self> {
-        configure(&mut self.world)?;
-        Ok(self)
-    }
-
-    pub fn with_replay_store(mut self, replay: Arc<dyn ReplayStore>) -> Self {
-        self.gateway = self.gateway.with_replay_store(replay);
+    /// Adds a client transport endpoint supervised with the Monolith lifecycle.
+    pub fn transport<T>(mut self, transport: T) -> Self
+    where
+        T: GatewayTransport,
+    {
+        self.gateway = self.gateway.transport(transport);
         self
     }
 
-    pub fn with_admission(
-        mut self,
-        controller: Arc<dyn AdmissionController>,
-        settings: AdmissionSettings,
-    ) -> Self {
-        self.gateway = self.gateway.with_admission(controller, settings);
+    /// Applies advanced Gateway assembly without exposing an internal builder.
+    pub fn gateway(mut self, configure: impl FnOnce(Gateway) -> Gateway) -> Self {
+        self.gateway = configure(self.gateway);
         self
     }
 
-    pub fn with_gateway_extension(mut self, extension: impl GatewayExtension) -> Self {
-        self.gateway = self.gateway.with_extension(extension);
+    /// Applies advanced World assembly without exposing an internal builder.
+    pub fn world(mut self, configure: impl FnOnce(World) -> World) -> Self {
+        self.world = configure(self.world);
         self
     }
 
-    pub fn with_admission_admin(mut self, admin: Arc<dyn AdmissionAdmin>) -> Self {
-        self.gateway = self.gateway.with_admission_admin(admin);
+    /// Registers a typed World route and handler.
+    pub fn route<E, F, Fut>(mut self, route: E, handler: F) -> Self
+    where
+        E: Route,
+        F: Fn(WorldContext, E::Request) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<E::Response>> + Send + 'static,
+    {
+        self.world = self.world.route(route, handler);
         self
     }
 
-    fn build(self) -> Result<MonolithParts> {
+    /// Registers a low-level byte route for protocol tools and non-Protobuf integrations.
+    pub fn route_raw(mut self, route: u32, handler: impl WorldHandler) -> Self {
+        self.world = self.world.route_raw(route, handler);
+        self
+    }
+
+    /// Adds middleware applied to every World route.
+    pub fn middleware<M>(mut self, middleware: M) -> Self
+    where
+        M: WorldMiddleware,
+    {
+        self.world = self.world.middleware(middleware);
+        self
+    }
+
+    /// Adds middleware to one typed World route.
+    pub fn route_middleware<E, M>(mut self, route: E, middleware: M) -> Self
+    where
+        E: Route,
+        M: WorldMiddleware,
+    {
+        self.world = self.world.route_middleware(route, middleware);
+        self
+    }
+
+    /// Adds middleware to a raw route ID.
+    pub fn route_middleware_raw<M>(mut self, route: u32, middleware: M) -> Self
+    where
+        M: WorldMiddleware,
+    {
+        self.world = self.world.route_middleware_raw(route, middleware);
+        self
+    }
+
+    /// Installs a reusable World module.
+    pub fn install<M>(mut self, module: M) -> Self
+    where
+        M: WorldModule,
+    {
+        self.world = self.world.install(module);
+        self
+    }
+
+    /// Adds admission-policy mutations to the combined administration API.
+    pub fn admission_admin(mut self, admin: Arc<dyn AdmissionAdmin>) -> Self {
+        self.gateway = self.gateway.admission_admin(admin.clone());
+        self.admission_admin = Some(admin);
+        self
+    }
+
+    /// Validates and assembles the in-process Gateway and World runtime.
+    pub fn build(self) -> Result<MonolithServer> {
         let world = self.world.build()?;
         let client = Arc::new(world.in_process_client());
         let world_diagnostics = world.diagnostics();
-        let mut gateway = self.gateway.with_world_client(client).build_parts()?;
-        debug_assert!(gateway.discovery.is_none());
-        gateway.admin = gateway
-            .admin
-            .with_diagnostics(Arc::new(MonolithDiagnostics {
-                gateway: gateway.gateway.clone(),
-                world: world_diagnostics,
-            }));
-        Ok(MonolithParts { gateway, world })
+        let gateway = Arc::new(self.gateway.world_client(client).build()?);
+
+        Ok(MonolithServer {
+            gateway,
+            admission_admin: self.admission_admin,
+            world,
+            world_diagnostics,
+        })
     }
 
-    pub async fn run(self) -> Result<()> {
-        self.run_with_trigger(async {
+    /// Builds and runs the Monolith until shutdown.
+    pub async fn run(self, admin: AdminServerConfig) -> Result<()> {
+        self.build()?.run(admin).await
+    }
+}
+
+/// Advanced, fully assembled Monolith runtime.
+pub struct MonolithServer {
+    gateway: Arc<GatewayServer>,
+    admission_admin: Option<Arc<dyn AdmissionAdmin>>,
+    world: WorldServer,
+    world_diagnostics: Arc<WorldDiagnostics>,
+}
+
+impl MonolithServer {
+    /// Returns the running Gateway handle used for push and session control.
+    pub fn gateway(&self) -> Arc<GatewayServer> {
+        self.gateway.clone()
+    }
+
+    /// Returns the World diagnostics handle.
+    pub fn world_diagnostics(&self) -> Arc<WorldDiagnostics> {
+        self.world_diagnostics.clone()
+    }
+
+    /// Runs until Ctrl-C or until one of the supervised services exits.
+    pub async fn run(self, admin: AdminServerConfig) -> Result<()> {
+        self.run_with_trigger(admin, async {
             let _ = elura_runtime::lifecycle::shutdown_signal().await;
         })
         .await
     }
 
-    /// Runs until an embedding application closes or sets the supplied signal.
-    pub async fn run_until(self, mut shutdown: tokio::sync::watch::Receiver<bool>) -> Result<()> {
-        self.run_with_trigger(async move {
+    /// Serves until an embedding application closes or sets the supplied signal.
+    pub async fn serve(
+        self,
+        admin: AdminServerConfig,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<()> {
+        self.run_with_trigger(admin, async move {
             while !*shutdown.borrow() {
                 if shutdown.changed().await.is_err() {
                     break;
@@ -181,9 +196,9 @@ impl MonolithLauncher {
 
     async fn run_with_trigger(
         self,
+        admin: AdminServerConfig,
         trigger: impl Future<Output = ()> + Send + 'static,
     ) -> Result<()> {
-        let parts = self.build()?;
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let signal = tokio::spawn({
             let shutdown_tx = shutdown_tx.clone();
@@ -194,11 +209,20 @@ impl MonolithLauncher {
         });
 
         let mut tasks = JoinSet::new();
+        let mut gateway_admin = GatewayAdmin::new(self.gateway.clone());
+        if let Some(admission_admin) = self.admission_admin {
+            gateway_admin = gateway_admin.with_admission(admission_admin);
+        }
+        let diagnostics = Arc::new(MonolithDiagnostics {
+            gateway: self.gateway.clone(),
+            world: self.world_diagnostics.clone(),
+        });
+        let admin = AdminServer::new(admin, diagnostics)?.with_gateway_admin(gateway_admin);
         let gateway_shutdown = shutdown_rx.clone();
-        tasks.spawn(async move { parts.gateway.gateway.serve_tcp(gateway_shutdown).await });
+        tasks.spawn(async move { self.gateway.serve_embedded(gateway_shutdown).await });
         let admin_shutdown = shutdown_rx.clone();
-        tasks.spawn(async move { parts.gateway.admin.serve(admin_shutdown).await });
-        tasks.spawn(async move { parts.world.serve_in_process(shutdown_rx).await });
+        tasks.spawn(async move { admin.serve(admin_shutdown).await });
+        tasks.spawn(async move { self.world.serve_in_process(shutdown_rx).await });
 
         let mut first_error = None;
         while let Some(completed) = tasks.join_next().await {
@@ -222,14 +246,9 @@ impl MonolithLauncher {
     }
 }
 
-struct MonolithParts {
-    gateway: elura_gateway::GatewayParts,
-    world: WorldServer,
-}
-
 struct MonolithDiagnostics {
-    gateway: Arc<elura_gateway::Gateway>,
-    world: Arc<elura_world::WorldDiagnostics>,
+    gateway: Arc<GatewayServer>,
+    world: Arc<WorldDiagnostics>,
 }
 
 #[async_trait::async_trait]
@@ -267,28 +286,20 @@ impl AdminDiagnostics for MonolithDiagnostics {
 mod tests {
     use super::*;
     use bytes::Bytes;
+    use elura_gateway::transport::{TcpConfig, TcpTransport};
 
-    fn config() -> MonolithLaunchConfig {
-        let mut config = MonolithLaunchConfig::default();
+    fn gateway_config() -> GatewayConfig {
+        let mut config = GatewayConfig::default();
         config.ticket.key = "k".repeat(32);
         config
     }
 
     #[test]
     fn builds_without_discovery_or_internal_token() {
-        MonolithLauncher::new(config())
-            .unwrap()
-            .configure_world(|world| {
-                world.register_raw(100, |_context, payload: Bytes| async move { Ok(payload) })?;
-                Ok(())
-            })
-            .unwrap()
+        Monolith::new(gateway_config(), WorldConfig::default())
+            .transport(TcpTransport::new(TcpConfig::default()).unwrap())
+            .route_raw(100, |_context, payload: Bytes| async move { Ok(payload) })
             .build()
             .unwrap();
-    }
-
-    #[test]
-    fn json_rejects_discovery_configuration() {
-        assert!(serde_json::from_str::<MonolithLaunchConfig>(r#"{"world_discovery":{}}"#).is_err());
     }
 }

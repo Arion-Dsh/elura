@@ -1,4 +1,4 @@
-//! Infrastructure adapters grouped by backing service and runtime concern.
+//! Infrastructure adapters grouped by application capability.
 
 #![deny(rustdoc::broken_intra_doc_links)]
 
@@ -7,13 +7,25 @@ pub mod account_version;
 pub mod admission;
 pub mod discovery;
 #[cfg(feature = "redis")]
-pub mod distributed;
+mod distributed;
+#[cfg(feature = "redis")]
+pub mod invalidation;
 #[cfg(feature = "kubernetes")]
 pub mod kubernetes;
+#[cfg(feature = "redis")]
+pub mod online;
+#[cfg(feature = "redis")]
+pub mod otp;
 pub mod outbox;
 #[cfg(feature = "redis")]
-pub mod player_invalidation;
+mod player_invalidation;
+#[cfg(feature = "redis")]
+pub mod push;
 #[cfg(feature = "redis")]
 pub mod redis;
+#[cfg(feature = "redis")]
+pub mod replay;
+#[cfg(feature = "redis")]
+pub mod session_control;
 #[cfg(feature = "sql")]
 mod sql_migration;

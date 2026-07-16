@@ -1,6 +1,6 @@
 //! Platform identity providers with a shared hardened HTTP boundary.
 
-use crate::{ProviderError, ProviderResult};
+use crate::{ProviderError, ProviderName, ProviderResult};
 use serde::de::DeserializeOwned;
 use std::time::Duration;
 
@@ -10,11 +10,12 @@ mod wechat;
 mod wechat_mini;
 
 pub use douyin::DouyinIdentity;
-pub use quicksdk::{QuickSdkIdentity, QuickSdkIdentityConfig};
+pub use quicksdk::{QuickSdkCredential, QuickSdkIdentity, QuickSdkIdentityConfig};
 pub use wechat::WechatIdentity;
 pub use wechat_mini::WechatMiniIdentity;
 
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct PlatformIdentityConfig {
     pub app_id: String,
     pub app_secret: String,
@@ -23,6 +24,21 @@ pub struct PlatformIdentityConfig {
     pub allow_insecure_endpoint: bool,
     pub max_response_bytes: usize,
     pub timeout: Duration,
+}
+
+impl PlatformIdentityConfig {
+    /// Creates hardened platform identity configuration using provider defaults.
+    pub fn new(app_id: impl Into<String>, app_secret: impl Into<String>) -> Self {
+        Self {
+            app_id: app_id.into(),
+            app_secret: app_secret.into(),
+            endpoint: String::new(),
+            require_union_id: false,
+            allow_insecure_endpoint: false,
+            max_response_bytes: 64 * 1024,
+            timeout: Duration::from_secs(10),
+        }
+    }
 }
 
 fn client(timeout: Duration) -> ProviderResult<reqwest::Client> {
@@ -57,6 +73,9 @@ async fn decode_json<T: DeserializeOwned>(
     response: reqwest::Response,
     maximum: usize,
 ) -> ProviderResult<T> {
+    if response.status().as_u16() == 429 {
+        return Err(ProviderError::RateLimited { retry_after: None });
+    }
     if !response.status().is_success() {
         return if response.status().is_client_error() {
             Err(ProviderError::InvalidCredentials)
@@ -78,12 +97,7 @@ async fn decode_json<T: DeserializeOwned>(
 }
 
 fn validate_code(raw: serde_json::Value) -> ProviderResult<String> {
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Credential {
-        code: String,
-    }
-    let credential: Credential =
+    let credential: super::CodeCredential =
         serde_json::from_value(raw).map_err(|_| ProviderError::InvalidCredentials)?;
     let code = credential.code.trim();
     if code.is_empty() || code.len() > 2048 {
@@ -104,7 +118,7 @@ fn identity(
         return Err(ProviderError::InvalidCredentials);
     }
     Ok(super::registry::VerifiedIdentity {
-        provider: provider.into(),
+        provider: ProviderName::parse(provider)?,
         subject,
         union_id,
         attributes: Default::default(),

@@ -31,7 +31,8 @@ impl PlayerProfileConfig {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AppConfig {
-    runtime: WorldLaunchConfig,
+    runtime: WorldConfig,
+    admin: AdminServerConfig,
     profile: PlayerProfileConfig,
 }
 
@@ -39,16 +40,16 @@ impl AppConfig {
     fn load() -> elura::Result<Self> {
         let path = env::var("APP_WORLD_CONFIG").unwrap_or_else(|_| "config/world.json".into());
         let mut config: Self = serde_json::from_slice(&fs::read(path)?)?;
-        config.runtime.internal_token = required_env("APP_INTERNAL_TOKEN")?;
+        config.runtime.internal_token = Some(required_env("APP_INTERNAL_TOKEN")?);
         if let Some(value) = optional_env("APP_WORLD_LISTEN") {
-            config.runtime.world.listen = parse_address("APP_WORLD_LISTEN", &value)?;
+            config.runtime.listen = parse_address("APP_WORLD_LISTEN", &value)?;
         }
         if let Some(value) = optional_env("APP_WORLD_ADMIN_ADDR") {
-            config.runtime.admin.listen = parse_address("APP_WORLD_ADMIN_ADDR", &value)?;
+            config.admin.listen = parse_address("APP_WORLD_ADMIN_ADDR", &value)?;
         }
-        config.runtime.admin.token = optional_env("APP_ADMIN_TOKEN");
+        config.admin.token = optional_env("APP_ADMIN_TOKEN");
         if let Some(value) = optional_env("APP_INSTANCE_ID") {
-            config.runtime.admin.instance_id = value;
+            config.admin.instance_id = value;
         }
         Ok(config)
     }
@@ -74,9 +75,22 @@ struct GetPlayerProfileResponse {
 #[tokio::main]
 async fn main() -> elura::Result<()> {
     let app = AppConfig::load()?;
-    WorldLauncher::new(app.runtime)?
-        .configure(move |builder| register(builder, app.profile))?
-        .run()
+    let profile = app.profile;
+    World::new(app.runtime)
+        .route(GetPlayerProfile, move |context: WorldContext, _request| {
+            let profile = profile.clone();
+            async move {
+                let identity = context.identity;
+                Ok(GetPlayerProfileResponse {
+                    user_id: identity.user_id,
+                    region_id: identity.region_id,
+                    realm_id: identity.realm_id,
+                    display_name: profile.display_name(identity.user_id),
+                    welcome_message: profile.welcome_message,
+                })
+            }
+        })
+        .run(app.admin)
         .await
 }
 
@@ -92,24 +106,4 @@ fn parse_address(name: &str, value: &str) -> elura::Result<std::net::SocketAddr>
     value
         .parse()
         .map_err(|_| elura::Error::InvalidConfig(format!("invalid {name}")))
-}
-
-fn register(builder: &mut WorldBuilder, profile: PlayerProfileConfig) -> elura::Result<()> {
-    builder.register(
-        GetPlayerProfile,
-        move |context: WorldContext, _request| {
-            let profile = profile.clone();
-            async move {
-                let identity = context.identity;
-                Ok(GetPlayerProfileResponse {
-                    user_id: identity.user_id,
-                    region_id: identity.region_id,
-                    realm_id: identity.realm_id,
-                    display_name: profile.display_name(identity.user_id),
-                    welcome_message: profile.welcome_message,
-                })
-            }
-        },
-    )?;
-    Ok(())
 }

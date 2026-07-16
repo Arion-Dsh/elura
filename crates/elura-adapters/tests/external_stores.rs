@@ -4,17 +4,19 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(feature = "redis")]
+use elura_adapters::online::RedisOnlineDirectory;
+#[cfg(feature = "redis")]
 use elura_adapters::outbox::RedisOutbox;
 #[cfg(feature = "sql")]
 use elura_adapters::outbox::SqlOutbox;
-#[cfg(any(feature = "redis", feature = "sql"))]
-use elura_adapters::outbox::{OutboxEvent, OutboxStore};
 #[cfg(feature = "redis")]
-use elura_adapters::redis::{
-    RedisOnlineDirectory, RedisReplayStore, RedisSessionControlBus, RedisSessionControlConfig,
-};
+use elura_adapters::replay::RedisReplayStore;
+#[cfg(feature = "redis")]
+use elura_adapters::session_control::{RedisSessionControlBus, RedisSessionControlConfig};
 #[cfg(feature = "redis")]
 use elura_core::online::{OnlineDirectory, SessionLease};
+#[cfg(any(feature = "redis", feature = "sql"))]
+use elura_core::outbox::{OutboxEvent, OutboxStore};
 #[cfg(feature = "redis")]
 use elura_core::session::Identity;
 #[cfg(feature = "redis")]
@@ -154,16 +156,12 @@ async fn redis_cluster_transport_keeps_multi_key_operations_in_one_slot_when_con
     assert_eq!(directory.user_sessions(1, 1, 2).await.unwrap().len(), 1);
     assert_eq!(directory.group_sessions("room:1").await.unwrap().len(), 1);
 
-    let control = RedisSessionControlBus::connect_cluster(
-        nodes.split(','),
-        "gateway-1",
-        RedisSessionControlConfig {
-            stream: format!("{prefix}:{{transport}}:session:control"),
-            ..RedisSessionControlConfig::default()
-        },
-    )
-    .await
-    .unwrap();
+    let mut control_config = RedisSessionControlConfig::default();
+    control_config.stream = format!("{prefix}:{{transport}}:session:control");
+    let control =
+        RedisSessionControlBus::connect_cluster(nodes.split(','), "gateway-1", control_config)
+            .await
+            .unwrap();
     control
         .publish(&SessionControlEvent {
             kind: SessionControlKind::ForceLogout,

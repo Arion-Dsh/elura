@@ -6,7 +6,6 @@ mod config;
 mod context;
 mod handler;
 mod keyed;
-mod launcher;
 mod middleware;
 mod module;
 mod observability;
@@ -16,6 +15,7 @@ mod runtime;
 mod server;
 mod stats;
 mod testing;
+mod world;
 
 pub use config::WorldConfig;
 pub use context::{ContextKey, TransactionGuard, WorldContext};
@@ -24,14 +24,13 @@ pub use elura_core::gateway_world::{
     WorldRequest,
 };
 pub use handler::WorldHandler;
-pub use launcher::{WorldLaunchConfig, WorldLauncher};
 pub use middleware::{
     LoggingMiddleware, Next, TransactionFactory, UnitOfWorkMiddleware, WorldMiddleware,
     WorldTransaction,
 };
-pub use module::WorldModule;
+pub use module::{WorldModule, WorldModuleRegistry};
 pub use routes::{Event, Route, RouteInfo};
-pub use runtime::WorldBuilder;
 pub use server::{InProcessWorldClient, WorldDiagnostics, WorldServer};
 pub use stats::WorldStatsSnapshot;
 pub use testing::WorldHarness;
+pub use world::World;

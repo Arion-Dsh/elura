@@ -38,8 +38,9 @@ pub struct KubernetesWorldDiscovery {
 
 #[cfg(feature = "kubernetes")]
 impl KubernetesWorldDiscovery {
-    pub fn new(config: EndpointWatcherConfig) -> Self {
-        Self { config }
+    pub fn new(config: EndpointWatcherConfig) -> Result<Self> {
+        config.validate()?;
+        Ok(Self { config })
     }
 }
 

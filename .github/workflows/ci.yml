@@ -53,12 +53,12 @@ jobs:
       ELURA_TEST_MYSQL_URL: mysql://root:root@127.0.0.1:3306/elura
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: dtolnay/rust-toolchain@1.97.0
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --workspace --all-features --all-targets -- -D warnings
       - run: cargo check -p elura --no-default-features
       - run: cargo check -p elura --all-features
       - run: cargo check -p elura-adapters --no-default-features
@@ -76,9 +76,41 @@ jobs:
       # package manifests and included file sets; release.yml packages/publishes
       # them in dependency order.
       - run: cargo package -p elura-runtime --allow-dirty --list
+      - run: cargo package -p elura-gateway --allow-dirty --list
+      - run: cargo package -p elura-world --allow-dirty --list
+      - run: cargo package -p elura-monolith --allow-dirty --list
       - run: cargo package -p elura-adapters --allow-dirty --list
       - run: cargo package -p elura-providers --allow-dirty --list
       - run: cargo package -p elura --allow-dirty --list
+      - run: cargo package -p elura-cli --allow-dirty --list
+
+  features:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-hack
+      - run: cargo hack check --workspace --each-feature --no-dev-deps
+
+  semver:
+    # Set ELURA_API_BASELINE_REV to the freeze commit/tag after the intentional
+    # pre-1.0 redesign lands. Until then there is no compatibility contract.
+    if: github.event_name == 'pull_request' && vars.ELURA_API_BASELINE_REV != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check public API compatibility
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: elura-core, elura-runtime, elura-gateway, elura-world, elura-monolith, elura-adapters, elura-providers, elura
+          baseline-rev: ${{ vars.ELURA_API_BASELINE_REV }}
+          feature-group: all-features
+          rust-toolchain: 1.97.0
 
   security-audit:
     runs-on: ubuntu-latest

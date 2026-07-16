@@ -5,17 +5,9 @@ use elura_runtime::observability::ReadinessProbe;
 use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
-use crate::redis::{RedisConnection, cluster_connection, standalone_connection};
-
-pub(crate) fn cluster_transport_prefix(prefix: &str) -> Result<String> {
-    if prefix.trim().is_empty() || prefix.contains(['{', '}']) {
-        return Err(Error::InvalidConfig(
-            "Redis Cluster transport prefix must be non-empty and must not contain hash tags"
-                .into(),
-        ));
-    }
-    Ok(format!("{prefix}:{{transport}}"))
-}
+use crate::redis::{
+    RedisConnection, cluster_connection, standalone_connection, validate_key_prefix,
+};
 
 #[derive(Clone)]
 pub struct RedisOnlineDirectory {
@@ -96,37 +88,40 @@ impl ReadinessProbe for RedisOnlineDirectory {
     }
 }
 impl RedisOnlineDirectory {
-    pub async fn connect(url: &str, prefix: String, ttl: Duration) -> Result<Self> {
-        Self::validate(&prefix, ttl, false)?;
-        Ok(Self {
-            connection: standalone_connection(url).await?,
-            prefix,
-            ttl,
-        })
+    pub async fn connect(url: &str, prefix: impl Into<String>, ttl: Duration) -> Result<Self> {
+        Self::from_connection(standalone_connection(url).await?, prefix, ttl)
     }
 
-    /// Connects the online directory to Redis Cluster.
-    ///
-    /// All transport keys use one hash tag so the directory's multi-key Lua
-    /// scripts and pipelines remain atomic within a single Cluster slot.
-    pub async fn connect_cluster<I, S>(nodes: I, prefix: String, ttl: Duration) -> Result<Self>
+    pub async fn connect_cluster<I, S>(
+        nodes: I,
+        prefix: impl Into<String>,
+        ttl: Duration,
+    ) -> Result<Self>
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        Self::validate(&prefix, ttl, true)?;
-        Ok(Self {
-            connection: cluster_connection(nodes).await?,
-            prefix: cluster_transport_prefix(&prefix)?,
-            ttl,
-        })
+        Self::from_connection(cluster_connection(nodes).await?, prefix, ttl)
     }
 
-    fn validate(prefix: &str, ttl: Duration, cluster: bool) -> Result<()> {
-        if prefix.trim().is_empty() || ttl.is_zero() || (cluster && prefix.contains(['{', '}'])) {
-            return Err(Error::InvalidConfig("directory config".into()));
+    fn from_connection(
+        connection: RedisConnection,
+        prefix: impl Into<String>,
+        ttl: Duration,
+    ) -> Result<Self> {
+        let prefix = prefix.into();
+        validate_key_prefix(&prefix)?;
+        if ttl.is_zero() {
+            return Err(Error::InvalidConfig(
+                "online directory lease TTL must be positive".into(),
+            ));
         }
-        Ok(())
+        let prefix = connection.atomic_prefix(&prefix)?;
+        Ok(Self {
+            connection,
+            prefix,
+            ttl,
+        })
     }
 
     pub(crate) fn key(&self, s: &str) -> String {
@@ -327,11 +322,9 @@ fn err(e: redis::RedisError) -> Error {
 mod tests {
     use redis::cluster_routing::Slot;
 
-    use super::cluster_transport_prefix;
-
     #[test]
     fn cluster_transport_keys_share_one_slot() {
-        let prefix = cluster_transport_prefix("elura").unwrap();
+        let prefix = "elura:{transport}";
         let keys = [
             format!("{prefix}:session:one"),
             format!("{prefix}:user:1:1:1"),

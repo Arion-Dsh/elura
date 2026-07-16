@@ -18,6 +18,7 @@ use crate::{ProviderError, ProviderResult};
 type HmacSha1 = Hmac<Sha1>;
 
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct AliSmsConfig {
     pub access_key_id: String,
     pub access_key_secret: String,
@@ -29,7 +30,7 @@ pub struct AliSmsConfig {
 }
 
 impl AliSmsConfig {
-    pub fn with_defaults(
+    pub fn new(
         access_key_id: impl Into<String>,
         access_key_secret: impl Into<String>,
         sign_name: impl Into<String>,
@@ -148,6 +149,9 @@ impl OtpSender for AliSmsSender {
             .send()
             .await
             .map_err(|_| ProviderError::Unavailable)?;
+        if response.status().as_u16() == 429 {
+            return Err(ProviderError::RateLimited { retry_after: None });
+        }
         if !response.status().is_success() {
             return Err(ProviderError::Unavailable);
         }

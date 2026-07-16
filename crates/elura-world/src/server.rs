@@ -1,7 +1,9 @@
+use std::net::SocketAddr;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use axum::Router;
 use elura_core::ownership::{OwnershipResolver, shard_for};
 use elura_core::protocol::{Frame, FrameCodec, FrameKind};
 use elura_core::{Error, ErrorEnvelope, Result};
@@ -16,11 +18,12 @@ use tracing::{info, warn};
 use elura_core::gateway_world::{
     GatewayWorldCommand, WorldClient, WorldCommand, WorldRegistrar, WorldRequest,
 };
-use elura_runtime::internal::{BoxedInternalStream, InternalToken, ServerTlsConfig};
+use elura_runtime::observability::{AdminServer, AdminServerConfig};
+use elura_runtime::security::{BoxedServiceStream, InternalToken, ServerTlsConfig};
 
 use super::WorldModule;
 use super::config::WorldConfig;
-use super::runtime::{WorldBuilder, WorldRuntime};
+use super::runtime::WorldRuntime;
 use super::{RouteInfo, WorldHarness, WorldStatsSnapshot};
 
 pub struct WorldServer {
@@ -32,6 +35,14 @@ pub struct WorldServer {
     tls: Option<ServerTlsConfig>,
     registrar: Option<Arc<dyn WorldRegistrar>>,
     ready: Arc<AtomicBool>,
+    admin: Option<AdminServer>,
+    admin_listen: Option<SocketAddr>,
+    http: Vec<WorldHttpServer>,
+}
+
+struct WorldHttpServer {
+    listen: SocketAddr,
+    router: Router,
 }
 
 pub struct WorldDiagnostics {
@@ -120,10 +131,6 @@ struct WorldOwnership {
 }
 
 impl WorldServer {
-    pub fn builder(config: WorldConfig) -> Result<WorldBuilder> {
-        WorldBuilder::new(config)
-    }
-
     pub(crate) fn from_parts(
         config: WorldConfig,
         runtime: Arc<WorldRuntime>,
@@ -138,7 +145,55 @@ impl WorldServer {
             tls: None,
             registrar: None,
             ready: Arc::new(AtomicBool::new(false)),
+            admin: None,
+            admin_listen: None,
+            http: Vec::new(),
         }
+    }
+
+    pub(crate) fn configure_process(mut self) -> Result<Self> {
+        if let Some(token) = self.config.internal_token.as_ref() {
+            self.authorization = Some(InternalToken::new(token.clone())?);
+        }
+        if let Some(tls) = self.config.tls.clone() {
+            self.tls = Some(tls.build()?);
+        }
+        Ok(self)
+    }
+
+    pub(crate) fn with_admin(mut self, config: AdminServerConfig) -> Result<Self> {
+        self.admin_listen = Some(config.listen);
+        self.admin = Some(AdminServer::new(config, self.diagnostics())?);
+        Ok(self)
+    }
+
+    pub(crate) fn add_http(&mut self, listen: String, router: Router) -> Result<()> {
+        let listen = listen
+            .parse()
+            .map_err(|_| Error::InvalidConfig(format!("invalid HTTP listen address {listen}")))?;
+        self.http.push(WorldHttpServer { listen, router });
+        Ok(())
+    }
+
+    pub(crate) fn validate_listeners(&self) -> Result<()> {
+        let mut listeners = vec![("world", self.config.listen)];
+        if let Some(admin_listen) = self.admin_listen {
+            listeners.push(("admin", admin_listen));
+        }
+        for http in &self.http {
+            listeners.push(("http", http.listen));
+        }
+        for (index, (left_name, left)) in listeners.iter().enumerate() {
+            for (right_name, right) in listeners.iter().skip(index + 1) {
+                if listeners_conflict(*left, *right) {
+                    return Err(Error::InvalidConfig(format!(
+                        "{left_name} and {right_name} listeners conflict at port {}",
+                        left.port()
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn with_internal_token(mut self, token: InternalToken) -> Self {
@@ -201,8 +256,102 @@ impl WorldServer {
         }
     }
 
+    /// Runs until Ctrl-C or until one of the supervised services exits.
+    pub async fn run(self, admin: AdminServerConfig) -> Result<()> {
+        if self.authorization.is_none() {
+            return Err(Error::InvalidConfig(
+                "standalone World requires an internal token".into(),
+            ));
+        }
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let signal = tokio::spawn(async move {
+            let _ = elura_runtime::lifecycle::shutdown_signal().await;
+            let _ = shutdown_tx.send(true);
+        });
+        let result = self.serve(admin, shutdown_rx).await;
+        signal.abort();
+        result
+    }
+
     /// Runs Module lifecycle without binding the internal World TCP listener.
-    pub async fn serve_in_process(self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
+    pub async fn serve_in_process(self, shutdown: watch::Receiver<bool>) -> Result<()> {
+        self.supervise(shutdown, true).await
+    }
+
+    pub async fn serve(
+        self,
+        admin: AdminServerConfig,
+        shutdown: watch::Receiver<bool>,
+    ) -> Result<()> {
+        self.with_admin(admin)?.supervise(shutdown, false).await
+    }
+
+    async fn supervise(
+        mut self,
+        mut external_shutdown: watch::Receiver<bool>,
+        in_process: bool,
+    ) -> Result<()> {
+        let admin = self.admin.take();
+        let http = std::mem::take(&mut self.http);
+        if admin.is_none() && http.is_empty() {
+            return if in_process {
+                self.serve_in_process_core(external_shutdown).await
+            } else {
+                self.serve_core(external_shutdown).await
+            };
+        }
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let forward_shutdown = shutdown_tx.clone();
+        let forward = tokio::spawn(async move {
+            if *external_shutdown.borrow() {
+                let _ = forward_shutdown.send(true);
+                return;
+            }
+            while external_shutdown.changed().await.is_ok() {
+                if *external_shutdown.borrow() {
+                    let _ = forward_shutdown.send(true);
+                    return;
+                }
+            }
+            let _ = forward_shutdown.send(true);
+        });
+
+        let mut tasks = JoinSet::new();
+        let world_shutdown = shutdown_rx.clone();
+        if in_process {
+            tasks.spawn(async move { self.serve_in_process_core(world_shutdown).await });
+        } else {
+            tasks.spawn(async move { self.serve_core(world_shutdown).await });
+        }
+        if let Some(admin) = admin {
+            let admin_shutdown = shutdown_rx.clone();
+            tasks.spawn(async move { admin.serve(admin_shutdown).await });
+        }
+        for http in http {
+            let http_shutdown = shutdown_rx.clone();
+            tasks.spawn(async move { http.serve(http_shutdown).await });
+        }
+
+        let mut first_error = None;
+        while let Some(completed) = tasks.join_next().await {
+            match completed {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) if first_error.is_none() => first_error = Some(error),
+                Err(error) if first_error.is_none() => {
+                    first_error = Some(Error::Internal(format!(
+                        "World service task panicked: {error}"
+                    )))
+                }
+                _ => {}
+            }
+            let _ = shutdown_tx.send(true);
+        }
+        forward.abort();
+        first_error.map_or(Ok(()), Err)
+    }
+
+    async fn serve_in_process_core(self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
         if self.registrar.is_some() {
             return Err(Error::InvalidConfig(
                 "in-process World cannot publish a network registration".into(),
@@ -219,7 +368,7 @@ impl WorldServer {
         self.stop_modules(started).await
     }
 
-    pub async fn serve(self, shutdown: watch::Receiver<bool>) -> Result<()> {
+    async fn serve_core(self, shutdown: watch::Receiver<bool>) -> Result<()> {
         let listener = TcpListener::bind(self.config.listen).await?;
         let started = self.start_modules().await?;
         if let Some(registrar) = &self.registrar
@@ -314,7 +463,7 @@ impl WorldServer {
                     let connection_shutdown = shutdown.clone();
                     connections.spawn(async move {
                         let _permit = permit;
-                        let stream: Result<BoxedInternalStream> = match tls {
+                        let stream: Result<BoxedServiceStream> = match tls {
                             Some(tls) => tokio::time::timeout(handshake_timeout, tls.accept(stream))
                                 .await
                                 .map_err(|_| Error::Timeout)
@@ -352,6 +501,31 @@ impl WorldServer {
     }
 }
 
+impl WorldHttpServer {
+    async fn serve(self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
+        let listener = TcpListener::bind(self.listen).await?;
+        axum::serve(listener, self.router)
+            .with_graceful_shutdown(async move {
+                if *shutdown.borrow() {
+                    return;
+                }
+                while shutdown.changed().await.is_ok() {
+                    if *shutdown.borrow() {
+                        return;
+                    }
+                }
+            })
+            .await
+            .map_err(std::io::Error::other)?;
+        Ok(())
+    }
+}
+
+fn listeners_conflict(left: SocketAddr, right: SocketAddr) -> bool {
+    left.port() == right.port()
+        && (left.ip() == right.ip() || left.ip().is_unspecified() || right.ip().is_unspecified())
+}
+
 async fn renew_registration(
     registrar: Arc<dyn WorldRegistrar>,
     mut shutdown: watch::Receiver<bool>,
@@ -375,7 +549,7 @@ async fn renew_registration(
 }
 
 async fn serve_connection(
-    stream: BoxedInternalStream,
+    stream: BoxedServiceStream,
     runtime: Arc<WorldRuntime>,
     max_payload: usize,
     max_in_flight: usize,
@@ -525,9 +699,10 @@ mod tests {
 
     use super::*;
     use crate::player::{PlayerLoader, PlayerSnapshot, PlayerStateMiddleware};
+    use crate::runtime::WorldBuilder;
     use crate::{
-        ContextKey, Next, Route, RouteInfo, TransactionFactory, UnitOfWorkMiddleware, WorldBuilder,
-        WorldContext, WorldMiddleware, WorldModule, WorldTransaction,
+        ContextKey, Next, Route, RouteInfo, TransactionFactory, UnitOfWorkMiddleware, WorldContext,
+        WorldMiddleware, WorldModule, WorldModuleRegistry, WorldTransaction,
     };
     use elura_core::session::PlayerKey;
 
@@ -539,6 +714,11 @@ mod tests {
             realm_id: 1,
             generation: 1,
         }
+    }
+
+    fn admin_config() -> AdminServerConfig {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        AdminServerConfig::new(listener.local_addr().unwrap(), "world", "world-test")
     }
 
     fn command(user_id: i64, payload: &[u8]) -> WorldCommand {
@@ -735,7 +915,7 @@ mod tests {
             }));
         let diagnostics = server.diagnostics();
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let task = tokio::spawn(server.serve(shutdown_rx));
+        let task = tokio::spawn(server.serve(admin_config(), shutdown_rx));
         tokio::time::timeout(Duration::from_secs(1), async {
             while !diagnostics.ready() || renewed.load(Ordering::SeqCst) == 0 {
                 tokio::task::yield_now().await;
@@ -757,8 +937,8 @@ mod tests {
             "lifecycle"
         }
 
-        fn register(&self, builder: &mut WorldBuilder) -> Result<()> {
-            builder.register_raw(100, |_context, payload: Bytes| async move { Ok(payload) })?;
+        fn register(&self, world: &mut WorldModuleRegistry<'_>) -> Result<()> {
+            world.route_raw(100, |_context, payload: Bytes| async move { Ok(payload) })?;
             Ok(())
         }
 
@@ -896,12 +1076,12 @@ mod tests {
             "failing"
         }
 
-        fn register(&self, builder: &mut WorldBuilder) -> Result<()> {
-            builder.register_raw(101, |_context, payload: Bytes| async move { Ok(payload) })?;
-            builder.use_middleware(Arc::new(RecordingMiddleware {
+        fn register(&self, world: &mut WorldModuleRegistry<'_>) -> Result<()> {
+            world.route_raw(101, |_context, payload: Bytes| async move { Ok(payload) })?;
+            world.middleware(RecordingMiddleware {
                 name: "leaked",
                 events: self.events.clone(),
-            }))?;
+            })?;
             Err(Error::Internal("registration failed".into()))
         }
     }

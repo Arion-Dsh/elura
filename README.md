@@ -8,105 +8,82 @@
 [![Rust 1.97+](https://img.shields.io/badge/rust-1.97%2B-dea584.svg?logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-[Documentation](https://arion-dsh.github.io/horizon-rs-doc/) · [API reference](https://docs.rs/elura) · [Crates.io](https://crates.io/crates/elura)
+[Documentation](https://elura.rustyspottedcat.dev/) · [API reference](https://docs.rs/elura) · [Crates.io](https://crates.io/crates/elura)
 
 </div>
 
-Elura separates connection handling from game logic: Gateway processes own client connections and
-sessions, while World processes execute application commands and manage player state. Deploy them
-independently for horizontal scaling or run both in one process during development.
+Elura separates client connections from game logic. Gateway processes own connections and
+sessions; World processes execute commands and manage player state. They can scale independently
+or run together as a monolith.
 
 > [!IMPORTANT]
-> Elura is under active `0.x` development. APIs may change between minor releases.
+> Elura is under active `0.x` development. Minor releases may contain breaking API changes.
 
-## Why Elura?
+## Highlights
 
-- **Purpose-built runtime** — WebSocket and QUIC transports, sessions, reconnect tickets, routing,
-  middleware, graceful shutdown, and observability are available as composable building blocks.
-- **Flexible topology** — use separate Gateway and World services in production, or a monolith for
-  local development and smaller deployments.
-- **Optional infrastructure** — enable Redis, SQL, Kubernetes, admin, identity, notification, OTP,
-  and payment integrations only when the application needs them.
-- **Project generation** — scaffold Rust binaries, configuration, containers, Kubernetes manifests,
-  and C++, C#, or TypeScript protocol SDKs from one CLI.
-
-## Architecture
+- WebSocket and QUIC transports, sessions, routing, middleware, and graceful shutdown.
+- Distributed Gateway and World deployment or single-process monolith mode.
+- Application-owned infrastructure with optional Redis, SQL, and Kubernetes adapters.
+- Optional identity, notification, OTP, and payment providers.
 
 ```text
-                    routed commands
-Clients ─────────▶ Gateway ─────────────▶ World
- WebSocket / QUIC   connections,          routes, middleware,
-                    sessions, admission   game and player state
-
-                    Redis · SQL · Kubernetes · external providers
+Clients ── WebSocket / QUIC ──▶ Gateway ── routed commands ──▶ World
+                                sessions                         game logic
+                                    │                                │
+                                    └── Redis · SQL · Kubernetes ────┘
 ```
-
-Gateway and World share protocol and discovery contracts from `elura-core`; neither runtime needs
-to depend on the other. `elura-monolith` is the composition layer that deliberately brings both
-runtimes into one process.
 
 ## Quick start
 
-Install the project generator:
+Install the CLI and scaffold an application:
 
 ```bash
 cargo install elura-cli
-```
-
-Generate a complete application in the current directory:
-
-```bash
 elura init all --dir .
 ```
 
-The generated project includes compilable Gateway, World, and monolith binaries, local
-configuration, a multi-stage Dockerfile, Docker Compose services, and Kubernetes manifests.
-Preview every generated file without writing anything:
+The generated project includes Gateway, World, and monolith binaries, configuration, Docker
+assets, Kubernetes manifests, and client SDK generation. Continue with the
+[documentation](https://elura.rustyspottedcat.dev/).
 
-```bash
-elura init all --dir . --dry-run
-```
+## Crates and features
 
-Generate client protocol SDKs together or select a language with `--language`:
+The `elura` facade enables `gateway` and `world` by default. Everything else is opt-in.
 
-```bash
-elura init sdk --dir .
-# --language cpp | csharp | typescript
-```
-
-See the [documentation](https://arion-dsh.github.io/horizon-rs-doc/) for application routes, the
-ELR2 wire protocol, deployment topologies, configuration, and operations.
-
-## Workspace
-
-| Package | Role |
+| Crate | Purpose |
 | --- | --- |
-| `elura` | Application-facing facade and feature selection |
 | `elura-core` | Protocol, session, routing, and cross-process contracts |
-| `elura-runtime` | Shared lifecycle, security, admin, and observability runtime |
-| `elura-gateway` | Client-facing connection and session runtime |
-| `elura-world` | Command routing and player-state runtime |
+| `elura-runtime` | Lifecycle, security, administration, and observability |
+| `elura-gateway` | Client connection and session runtime |
+| `elura-world` | Command and player-state runtime |
 | `elura-monolith` | Single-process Gateway and World composition |
-| `elura-adapters` | Redis, SQL, Kubernetes, and admin adapters |
-| `elura-providers` | Identity, notification, OTP, and payment providers |
+| `elura-adapters` | Redis, SQL, and Kubernetes implementations |
+| `elura-providers` | Identity, notification, OTP, and payment integrations |
 | `elura-cli` | Project and client-SDK generator |
-| `elura-load` / `elura-perf` | Load generation and performance tools |
+
+Example feature selection:
+
+```toml
+[dependencies]
+elura = { version = "0.2", features = ["monolith", "redis"] }
+```
+
+Applications may implement the public storage and transport contracts themselves; using
+`elura-adapters` or `elura-providers` is not required.
 
 ## Development
 
-Rust `1.97` or newer is required. Run the complete local verification suite with:
+Rust `1.97` or newer is required. Run the full verification suite with:
 
 ```bash
 make verify
 ```
 
-This checks formatting, Clippy, tests, Rustdoc, and package contents. Integration tests can also use
-Redis, PostgreSQL, and MySQL; CI defines the required service configuration in
-[`ci.yml`](https://github.com/Arion-Dsh/elura/blob/main/.github/workflows/ci.yml).
+This checks formatting, Clippy, tests, Rustdoc, and package contents.
 
 ## License
 
 Elura is dual-licensed under your choice of:
 
-- [Apache License, Version 2.0](https://github.com/Arion-Dsh/elura/blob/main/LICENSE-APACHE)
+- [Apache License 2.0](https://github.com/Arion-Dsh/elura/blob/main/LICENSE-APACHE)
 - [MIT License](https://github.com/Arion-Dsh/elura/blob/main/LICENSE-MIT)

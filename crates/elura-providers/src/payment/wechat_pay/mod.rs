@@ -18,8 +18,8 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::Sha256;
 
 use super::{
-    CheckoutRequest, CheckoutResult, Money, NotificationRequest, Payment, PaymentCapabilities,
-    PaymentEvent, PaymentProvider, PaymentStatus, QueryRequest,
+    CheckoutRequest, CheckoutResult, ClientPayload, Money, NotificationRequest, Payment,
+    PaymentCapabilities, PaymentEvent, PaymentLookup, PaymentProvider, PaymentStatus,
 };
 use crate::{ProviderError, ProviderResult};
 
@@ -28,6 +28,7 @@ const QUERY_PATH: &str = "/v3/pay/transactions/out-trade-no/";
 const QUERY_ID_PATH: &str = "/v3/pay/transactions/id/";
 
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct WechatPayConfig {
     pub merchant_id: String,
     pub serial_number: String,
@@ -40,6 +41,52 @@ pub struct WechatPayConfig {
     pub wechat_public_key_id: String,
     pub base_url: String,
     pub timeout: Duration,
+}
+
+impl WechatPayConfig {
+    /// Creates the non-secret portion of a WeChat Pay configuration.
+    pub fn new(
+        merchant_id: impl Into<String>,
+        app_id: impl Into<String>,
+        notify_url: impl Into<String>,
+    ) -> Self {
+        Self {
+            merchant_id: merchant_id.into(),
+            serial_number: String::new(),
+            api_v3_key: String::new(),
+            private_key_pem: String::new(),
+            app_id: app_id.into(),
+            notify_url: notify_url.into(),
+            wechat_public_key_pem: String::new(),
+            wechat_public_key_id: String::new(),
+            base_url: "https://api.mch.weixin.qq.com/".into(),
+            timeout: Duration::from_secs(10),
+        }
+    }
+
+    /// Installs the merchant signing identity and API v3 key.
+    pub fn with_merchant_identity(
+        mut self,
+        serial_number: impl Into<String>,
+        api_v3_key: impl Into<String>,
+        private_key_pem: impl Into<String>,
+    ) -> Self {
+        self.serial_number = serial_number.into();
+        self.api_v3_key = api_v3_key.into();
+        self.private_key_pem = private_key_pem.into();
+        self
+    }
+
+    /// Installs the WeChat notification verification identity.
+    pub fn with_wechat_identity(
+        mut self,
+        public_key_id: impl Into<String>,
+        public_key_pem: impl Into<String>,
+    ) -> Self {
+        self.wechat_public_key_id = public_key_id.into();
+        self.wechat_public_key_pem = public_key_pem.into();
+        self
+    }
 }
 
 pub struct WechatPayPayment {
@@ -176,6 +223,9 @@ impl WechatPayPayment {
                 "WeChat response too large".into(),
             ));
         }
+        if status.as_u16() == 429 {
+            return Err(ProviderError::RateLimited { retry_after: None });
+        }
         if !status.is_success() {
             return Err(ProviderError::Rejected(format!("WeChat Pay HTTP {status}")));
         }
@@ -258,12 +308,12 @@ impl PaymentProvider for WechatPayPayment {
     }
 
     async fn create(&self, request: CheckoutRequest) -> ProviderResult<CheckoutResult> {
-        request.amount.validate()?;
+        request.validate()?;
         if request.amount.currency != "CNY"
             || request.merchant_order_id.trim().is_empty()
             || request.subject.trim().is_empty()
         {
-            return Err(ProviderError::Rejected(
+            return Err(ProviderError::InvalidRequest(
                 "invalid WeChat Pay checkout".into(),
             ));
         }
@@ -285,23 +335,20 @@ impl PaymentProvider for WechatPayPayment {
         }
         Ok(CheckoutResult {
             provider_order_id: Some(response.prepay_id.clone()),
-            client_payload: self.app_payload(&response.prepay_id)?,
+            client_payload: ClientPayload::Json(
+                serde_json::from_str(&self.app_payload(&response.prepay_id)?).map_err(|_| {
+                    ProviderError::InvalidResponse("invalid WeChat client payload".into())
+                })?,
+            ),
             expires_at: SystemTime::now().checked_add(Duration::from_secs(7200)),
         })
     }
 
-    async fn query(&self, request: QueryRequest) -> ProviderResult<Payment> {
-        let (prefix, order) = match (
-            request
-                .merchant_order_id
-                .filter(|value| !value.trim().is_empty()),
-            request
-                .provider_order_id
-                .filter(|value| !value.trim().is_empty()),
-        ) {
-            (Some(order), _) => (QUERY_PATH, order),
-            (None, Some(order)) => (QUERY_ID_PATH, order),
-            _ => return Err(ProviderError::Rejected("an order id is required".into())),
+    async fn query(&self, lookup: PaymentLookup) -> ProviderResult<Payment> {
+        let order = lookup.value()?.to_owned();
+        let prefix = match lookup {
+            PaymentLookup::MerchantOrderId(_) => QUERY_PATH,
+            PaymentLookup::ProviderOrderId(_) => QUERY_ID_PATH,
         };
         let escaped = url::form_urlencoded::byte_serialize(order.as_bytes()).collect::<String>();
         let path = format!("{prefix}{escaped}?mchid={}", self.merchant_id);
@@ -314,15 +361,7 @@ impl PaymentProvider for WechatPayPayment {
         request: NotificationRequest,
     ) -> ProviderResult<PaymentEvent> {
         request.validate()?;
-        let mut headers = HeaderMap::new();
-        for (name, value) in request.headers {
-            let name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
-                .map_err(|_| ProviderError::InvalidSignature)?;
-            let value = reqwest::header::HeaderValue::from_str(&value)
-                .map_err(|_| ProviderError::InvalidSignature)?;
-            headers.insert(name, value);
-        }
-        self.verify_http_signature(&headers, &request.body)?;
+        self.verify_http_signature(&request.headers, &request.body)?;
         let envelope: NotificationEnvelope = serde_json::from_slice(&request.body)
             .map_err(|_| ProviderError::InvalidResponse("invalid WeChat notification".into()))?;
         if envelope.resource.nonce.len() != 12 {
@@ -352,16 +391,22 @@ impl PaymentProvider for WechatPayPayment {
             ));
         }
         let payment = result.into_payment()?;
+        let provider_order_id = payment.provider_order_id.ok_or_else(|| {
+            ProviderError::InvalidResponse("missing WeChat provider order id".into())
+        })?;
+        let amount = payment
+            .amount
+            .ok_or_else(|| ProviderError::InvalidResponse("missing WeChat amount".into()))?;
         Ok(PaymentEvent {
             event_id: envelope.id,
             merchant_order_id: payment.merchant_order_id,
-            provider_order_id: payment.provider_order_id,
+            provider_order_id,
             original_provider_order_id: None,
             payer_id: payment.payer_id,
             product_id: None,
             quantity: 1,
             status: payment.status,
-            amount: payment.amount,
+            amount,
             environment: None,
             occurred_at: payment.paid_at,
         })
@@ -399,7 +444,7 @@ impl QueryResponse {
             currency: self.amount.currency,
             minor_units: self.amount.total,
         };
-        amount.validate()?;
+        amount.validate_response()?;
         if amount.currency != "CNY" {
             return Err(ProviderError::InvalidResponse(
                 "WeChat payment currency mismatch".into(),
@@ -407,9 +452,9 @@ impl QueryResponse {
         }
         Ok(Payment {
             merchant_order_id: self.out_trade_no,
-            provider_order_id: self.transaction_id,
+            provider_order_id: Some(self.transaction_id),
             status: map_status(&self.trade_state),
-            amount,
+            amount: Some(amount),
             paid_at: self
                 .success_time
                 .and_then(|value| chrono::DateTime::parse_from_rfc3339(&value).ok())

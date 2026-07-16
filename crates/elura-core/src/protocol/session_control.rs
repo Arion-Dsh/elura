@@ -8,6 +8,7 @@ use crate::{Error, Result};
 /// Numeric values are part of the public wire contract and must remain stable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Enumeration)]
 #[repr(i32)]
+#[non_exhaustive]
 pub enum SessionControlAction {
     Unspecified = 0,
     Kick = 1,

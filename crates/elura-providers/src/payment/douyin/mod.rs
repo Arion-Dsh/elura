@@ -9,8 +9,8 @@ use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
 
 use super::{
-    Money, NotificationRequest, Payment, PaymentCapabilities, PaymentEvent, PaymentProvider,
-    PaymentStatus, QueryRequest,
+    Money, NotificationRequest, Payment, PaymentCapabilities, PaymentEvent, PaymentLookup,
+    PaymentProvider, PaymentStatus,
 };
 use crate::{ProviderError, ProviderResult};
 
@@ -18,6 +18,7 @@ const TOKEN_URL: &str = "https://minigame.zijieapi.com/mgplatform/api/apps/stabl
 const QUERY_URL: &str = "https://developer.toutiao.com/api/apps/game/payment/queryPayState";
 
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct DouyinConfig {
     pub callback_token: String,
     pub app_id: String,
@@ -25,6 +26,24 @@ pub struct DouyinConfig {
     pub token_url: String,
     pub query_url: String,
     pub timeout: Duration,
+}
+
+impl DouyinConfig {
+    /// Creates Douyin payment configuration using the production endpoints.
+    pub fn new(
+        callback_token: impl Into<String>,
+        app_id: impl Into<String>,
+        app_secret: impl Into<String>,
+    ) -> Self {
+        Self {
+            callback_token: callback_token.into(),
+            app_id: app_id.into(),
+            app_secret: app_secret.into(),
+            token_url: TOKEN_URL.into(),
+            query_url: QUERY_URL.into(),
+            timeout: Duration::from_secs(10),
+        }
+    }
 }
 
 struct CachedToken {
@@ -82,7 +101,7 @@ impl DouyinPayment {
             return serde_json::from_slice(&request.body)
                 .map_err(|_| ProviderError::InvalidResponse("invalid Douyin callback".into()));
         }
-        let values = url::form_urlencoded::parse(request.query.as_bytes())
+        let values = url::form_urlencoded::parse(request.query().as_bytes())
             .into_owned()
             .collect::<std::collections::HashMap<_, _>>();
         Ok(Envelope {
@@ -232,13 +251,11 @@ impl PaymentProvider for DouyinPayment {
         }
     }
 
-    async fn query(&self, request: QueryRequest) -> ProviderResult<Payment> {
-        let order = request
-            .merchant_order_id
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| {
-                ProviderError::Rejected("Douyin merchant order id is required".into())
-            })?;
+    async fn query(&self, lookup: PaymentLookup) -> ProviderResult<Payment> {
+        let order = lookup.value()?.to_owned();
+        if !matches!(lookup, PaymentLookup::MerchantOrderId(_)) {
+            return Err(ProviderError::Unsupported);
+        }
         let token = self.access_token().await?;
         let mut url = reqwest::Url::parse(&self.config.query_url)
             .map_err(|error| ProviderError::Config(error.to_string()))?;
@@ -269,12 +286,9 @@ impl PaymentProvider for DouyinPayment {
         }
         Ok(Payment {
             merchant_order_id: order,
-            provider_order_id: String::new(),
+            provider_order_id: None,
             status: map_status(&response.status),
-            amount: Money {
-                currency: String::new(),
-                minor_units: 0,
-            },
+            amount: None,
             payer_id: None,
             paid_at: None,
         })
@@ -308,7 +322,7 @@ impl PaymentProvider for DouyinPayment {
             currency,
             minor_units: body.amount_cent,
         };
-        amount.validate()?;
+        amount.validate_response()?;
         Ok(PaymentEvent {
             event_id: body.order_no_channel.clone(),
             merchant_order_id: body.cp_orderno,
@@ -335,6 +349,9 @@ async fn decode_response<T: DeserializeOwned>(response: reqwest::Response) -> Pr
         return Err(ProviderError::InvalidResponse(
             "Douyin response too large".into(),
         ));
+    }
+    if status.as_u16() == 429 {
+        return Err(ProviderError::RateLimited { retry_after: None });
     }
     if !status.is_success() {
         return Err(ProviderError::Rejected(format!("Douyin HTTP {status}")));
@@ -368,7 +385,6 @@ fn map_status(value: &str) -> PaymentStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn provider() -> DouyinPayment {
         DouyinPayment::new(DouyinConfig {
@@ -392,13 +408,12 @@ mod tests {
                 .to_string()
                 .into_bytes();
         let event = provider
-            .verify_notification(NotificationRequest {
-                method: "POST".into(),
-                path: "/".into(),
-                query: String::new(),
-                headers: HashMap::new(),
+            .verify_notification(NotificationRequest::new(
+                http::Method::POST,
+                "/".parse().unwrap(),
+                http::HeaderMap::new(),
                 body,
-            })
+            ))
             .await
             .unwrap();
         assert_eq!(event.provider_order_id, "channel");
@@ -409,13 +424,14 @@ mod tests {
     fn callback_url_echo_is_authenticated() {
         let provider = provider();
         let signature = provider.signature("10", "n", "");
-        let request = NotificationRequest {
-            method: "GET".into(),
-            path: "/".into(),
-            query: format!("timestamp=10&nonce=n&echostr=echo&signature={signature}"),
-            headers: HashMap::new(),
-            body: Vec::new(),
-        };
+        let request = NotificationRequest::new(
+            http::Method::GET,
+            format!("/?timestamp=10&nonce=n&echostr=echo&signature={signature}")
+                .parse()
+                .unwrap(),
+            http::HeaderMap::new(),
+            bytes::Bytes::new(),
+        );
         assert_eq!(provider.verify_callback_url(&request).unwrap(), "echo");
     }
 }

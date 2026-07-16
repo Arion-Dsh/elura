@@ -6,7 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 readme = "../../README.md"
-description = "Protocol, session, routing, realtime, and ticket primitives for Elura"
+description = "Protocol, session, routing, outbox, realtime, and ticket primitives for Elura"
 documentation = "https://docs.rs/elura-core"
 
 [package.metadata.docs.rs]

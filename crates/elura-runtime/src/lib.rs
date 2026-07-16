@@ -1,16 +1,11 @@
 //! Shared process infrastructure for Elura server runtimes.
 
 #![deny(rustdoc::broken_intra_doc_links)]
+#![deny(missing_docs)]
 
-#[doc(hidden)]
-pub mod internal;
+/// Serializable launch-time configuration shared by server processes.
 pub mod launch;
 pub mod lifecycle;
 pub mod observability;
-
-/// Security and TLS types for trusted service-to-service traffic.
-pub mod security {
-    pub use crate::internal::{
-        ClientTlsConfig, InternalToken, ServerTlsConfig, TlsCertificateReloader,
-    };
-}
+pub mod outbox;
+pub mod security;

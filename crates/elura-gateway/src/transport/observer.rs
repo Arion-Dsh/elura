@@ -6,6 +6,7 @@ use elura_core::session::{Session, SessionSnapshot};
 use tracing::warn;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SessionEventKind {
     Connected,
     Authenticated,

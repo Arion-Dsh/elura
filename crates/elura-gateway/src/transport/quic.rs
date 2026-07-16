@@ -3,9 +3,12 @@
 use std::io;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use elura_core::protocol::PROTOCOL_IDENTIFIER;
 use elura_core::{Error, Result};
 use quinn::crypto::rustls::QuicServerConfig;
@@ -13,16 +16,11 @@ use quinn::{Endpoint, IdleTimeout, Incoming, TransportConfig, VarInt};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Semaphore, watch};
-use tracing::{debug, info};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::sync::{Semaphore, mpsc};
+use tokio::task::JoinHandle;
 
-use elura_runtime::internal::BoxedInternalStream;
-
-use super::SessionService;
-use super::tcp::{StreamConfig, serve_stream};
-
-const SHUTDOWN_CODE: u32 = 0x100;
-const SESSION_CLOSED_CODE: u32 = 0x101;
+use super::GatewayTransportListener;
 
 /// Configuration for a public QUIC endpoint.
 ///
@@ -31,16 +29,12 @@ const SESSION_CLOSED_CODE: u32 = 0x101;
 /// certificate chain and private key are mandatory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+#[non_exhaustive]
 pub struct QuicConfig {
     pub listen: SocketAddr,
     pub certificate_file: PathBuf,
     pub key_file: PathBuf,
     pub alpn_protocol: String,
-    pub max_payload: usize,
-    pub inbound_capacity: usize,
-    pub response_capacity: usize,
-    pub push_capacity: usize,
-    pub write_timeout: Duration,
     pub handshake_timeout: Duration,
     pub idle_timeout: Duration,
     pub keep_alive_interval: Option<Duration>,
@@ -50,15 +44,10 @@ pub struct QuicConfig {
 impl Default for QuicConfig {
     fn default() -> Self {
         Self {
-            listen: "127.0.0.1:17002".parse().expect("static address"),
+            listen: "127.0.0.1:17003".parse().expect("static address"),
             certificate_file: PathBuf::new(),
             key_file: PathBuf::new(),
             alpn_protocol: PROTOCOL_IDENTIFIER.into(),
-            max_payload: 1 << 20,
-            inbound_capacity: 64,
-            response_capacity: 64,
-            push_capacity: 64,
-            write_timeout: Duration::from_secs(10),
             handshake_timeout: Duration::from_secs(5),
             idle_timeout: Duration::from_secs(90),
             keep_alive_interval: Some(Duration::from_secs(30)),
@@ -86,11 +75,6 @@ impl QuicConfig {
             || self.key_file.as_os_str().is_empty()
             || self.alpn_protocol.is_empty()
             || self.alpn_protocol.len() > u8::MAX as usize
-            || self.max_payload == 0
-            || self.inbound_capacity == 0
-            || self.response_capacity == 0
-            || self.push_capacity == 0
-            || self.write_timeout.is_zero()
             || self.handshake_timeout.is_zero()
             || self.idle_timeout.is_zero()
             || self
@@ -133,80 +117,61 @@ impl QuicConfig {
         server.max_incoming(self.max_pending_connections);
         Ok(server)
     }
-
-    fn stream_config(&self) -> StreamConfig {
-        StreamConfig {
-            max_payload: self.max_payload,
-            inbound_capacity: self.inbound_capacity,
-            response_capacity: self.response_capacity,
-            push_capacity: self.push_capacity,
-            write_timeout: self.write_timeout,
-        }
-    }
 }
 
-pub(crate) async fn serve_quic(
-    config: QuicConfig,
-    service: Arc<dyn SessionService>,
-    mut shutdown: watch::Receiver<bool>,
-) -> Result<()> {
+#[doc(hidden)]
+pub struct QuicGatewayListener {
+    incoming: mpsc::Receiver<Result<(SocketAddr, QuicIo)>>,
+    task: JoinHandle<()>,
+}
+
+pub(crate) async fn bind(config: QuicConfig) -> Result<QuicGatewayListener> {
     let server_config = config.server_config()?;
     let endpoint = Endpoint::server(server_config, config.listen)?;
     let pending = Arc::new(Semaphore::new(config.max_pending_connections));
-    info!(address = %config.listen, alpn = %config.alpn_protocol, "QUIC gateway listening");
-
-    if !*shutdown.borrow() {
+    let (sender, incoming) = mpsc::channel(config.max_pending_connections);
+    let task = tokio::spawn(async move {
         loop {
-            tokio::select! {
-                changed = shutdown.changed() => {
-                    if changed.is_err() || *shutdown.borrow() {
-                        break;
-                    }
-                }
-                incoming = endpoint.accept() => {
-                    let Some(incoming) = incoming else {
-                        break;
-                    };
-                    let Ok(permit) = pending.clone().try_acquire_owned() else {
-                        incoming.refuse();
-                        continue;
-                    };
-                    let service = service.clone();
-                    let stream_config = config.stream_config();
-                    let handshake_timeout = config.handshake_timeout;
-                    tokio::spawn(async move {
-                        let _permit = permit;
-                        let peer = incoming.remote_address();
-                        if let Err(error) = connection(
-                            incoming,
-                            peer,
-                            handshake_timeout,
-                            stream_config,
-                            service,
-                        ).await {
-                            debug!(%peer, %error, "QUIC client disconnected");
-                        }
-                    });
-                }
-            }
+            let Some(incoming) = endpoint.accept().await else {
+                break;
+            };
+            let Ok(permit) = pending.clone().try_acquire_owned() else {
+                incoming.refuse();
+                continue;
+            };
+            let sender = sender.clone();
+            let handshake_timeout = config.handshake_timeout;
+            tokio::spawn(async move {
+                let _permit = permit;
+                let peer = incoming.remote_address();
+                let result = connection(incoming, peer, handshake_timeout).await;
+                let _ = sender.send(result).await;
+            });
         }
-    }
+    });
+    Ok(QuicGatewayListener { incoming, task })
+}
 
-    // Stop accepting new handshakes while allowing established Sessions to
-    // complete the Gateway's normal drain sequence.
-    endpoint.set_server_config(None);
-    endpoint.wait_idle().await;
-    endpoint.close(VarInt::from_u32(SHUTDOWN_CODE), b"server shutdown");
-    Ok(())
+#[async_trait]
+impl GatewayTransportListener for QuicGatewayListener {
+    type Io = QuicIo;
+
+    async fn accept(&mut self) -> Result<(SocketAddr, Self::Io)> {
+        self.incoming.recv().await.ok_or(Error::Unavailable)?
+    }
+}
+
+impl Drop for QuicGatewayListener {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 
 async fn connection(
     incoming: Incoming,
     peer: SocketAddr,
     handshake_timeout: Duration,
-    stream_config: StreamConfig,
-    service: Arc<dyn SessionService>,
-) -> Result<()> {
+) -> Result<(SocketAddr, QuicIo)> {
     let connecting = incoming
         .accept()
         .map_err(|error| Error::Io(io::Error::other(error)))?;
@@ -218,10 +183,47 @@ async fn connection(
         .await
         .map_err(|_| Error::Timeout)?
         .map_err(|error| Error::Io(io::Error::other(error)))?;
-    let stream: BoxedInternalStream = Box::new(tokio::io::join(receive, send));
-    let result = serve_stream(stream, peer, stream_config, service).await;
-    connection.close(VarInt::from_u32(SESSION_CLOSED_CODE), b"session closed");
-    result
+    let keepalive = connection.clone();
+    tokio::spawn(async move {
+        keepalive.closed().await;
+    });
+    let stream = QuicIo {
+        stream: tokio::io::join(receive, send),
+    };
+    Ok((peer, stream))
+}
+
+#[doc(hidden)]
+pub struct QuicIo {
+    stream: tokio::io::Join<quinn::RecvStream, quinn::SendStream>,
+}
+
+impl AsyncRead for QuicIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_read(cx, buffer)
+    }
+}
+
+impl AsyncWrite for QuicIo {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_write(cx, buffer)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_shutdown(cx)
+    }
 }
 
 fn load_certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
@@ -239,7 +241,6 @@ fn load_certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
 
 #[cfg(test)]
 mod tests {
-    use async_trait::async_trait;
     use bytes::Bytes;
     use elura_core::protocol::{Frame, FrameCodec, PROTOCOL_IDENTIFIER};
     use futures_util::{SinkExt, StreamExt};
@@ -247,27 +248,6 @@ mod tests {
     use tokio_util::codec::Framed;
 
     use super::*;
-
-    struct EchoSession;
-
-    #[async_trait]
-    impl SessionService for EchoSession {
-        async fn serve_session(
-            &self,
-            mut connection: super::super::SessionConnection,
-        ) -> Result<()> {
-            let request = connection
-                .inbound
-                .recv()
-                .await
-                .ok_or(Error::Unavailable)??;
-            connection
-                .responses
-                .send(Frame::response(&request, request.payload.clone()))
-                .await
-                .map_err(|_| Error::Unavailable)
-        }
-    }
 
     #[test]
     fn requires_an_identity() {
@@ -287,17 +267,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exchanges_elr2_frames_over_quic() {
+    async fn listener_yields_an_elr2_byte_stream() {
         let certificate =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("src/transport/testdata/quic-cert.pem");
         let key = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/transport/testdata/quic-key.pem");
         let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let address = socket.local_addr().unwrap();
         drop(socket);
-        let config = QuicConfig::from_pem_files(address, &certificate, key);
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let server = tokio::spawn(serve_quic(config, Arc::new(EchoSession), shutdown_rx));
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        let mut listener = bind(QuicConfig::from_pem_files(address, &certificate, key))
+            .await
+            .unwrap();
+        let server = tokio::spawn(async move {
+            let (_, stream) = listener.accept().await.unwrap();
+            let mut framed = Framed::new(stream, FrameCodec::default());
+            let request = framed.next().await.unwrap().unwrap();
+            framed
+                .send(Frame::response(&request, request.payload.clone()))
+                .await
+                .unwrap();
+            framed.close().await.unwrap();
+            listener
+        });
 
         let mut roots = rustls::RootCertStore::empty();
         roots
@@ -318,18 +308,12 @@ mod tests {
             .unwrap();
         let (send, receive) = connection.open_bi().await.unwrap();
         let mut framed = Framed::new(tokio::io::join(receive, send), FrameCodec::default());
-        let request = Frame::request(100, 7, Bytes::from_static(b"quic")).unwrap();
-        framed.send(request).await.unwrap();
-        let response = tokio::time::timeout(Duration::from_secs(1), framed.next())
+        framed
+            .send(Frame::request(100, 7, Bytes::from_static(b"quic")).unwrap())
             .await
-            .unwrap()
-            .unwrap()
             .unwrap();
+        let response = framed.next().await.unwrap().unwrap();
         assert_eq!(response.payload, Bytes::from_static(b"quic"));
-
-        connection.close(VarInt::from_u32(0), b"done");
-        endpoint.wait_idle().await;
-        shutdown_tx.send(true).unwrap();
-        server.await.unwrap().unwrap();
+        drop(server.await.unwrap());
     }
 }

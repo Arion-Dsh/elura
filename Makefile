@@ -1,10 +1,13 @@
-.PHONY: fmt check test docs package verify
+.PHONY: fmt fmt-fix check test docs package verify
 
 fmt:
+	cargo fmt --all -- --check
+
+fmt-fix:
 	cargo fmt --all
 
 check:
-	cargo clippy --workspace --all-targets -- -D warnings
+	cargo clippy --workspace --all-features --all-targets -- -D warnings
 
 test:
 	cargo test --workspace --all-features

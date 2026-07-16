@@ -9,7 +9,8 @@ use elura_gateway::transport::{
     AdmissionController, AdmissionDecision, AdmissionRejection, AdmissionRequest, AdmissionStage,
 };
 use redis::Script;
-use redis::aio::ConnectionManager;
+
+use crate::redis::{RedisConnection, standalone_connection, validate_key_prefix};
 
 const ADMIT: &str = r#"
 local function remaining(key)
@@ -67,6 +68,7 @@ impl AdmissionLimit {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct RedisAdmissionConfig {
     pub prefix: String,
     pub connection_limit: Option<AdmissionLimit>,
@@ -75,11 +77,7 @@ pub struct RedisAdmissionConfig {
 
 impl RedisAdmissionConfig {
     fn validate(&self) -> Result<()> {
-        if self.prefix.trim().is_empty() || self.prefix.len() > 128 {
-            return Err(Error::InvalidConfig(
-                "Redis admission prefix is invalid".into(),
-            ));
-        }
+        validate_key_prefix(&self.prefix)?;
         if let Some(limit) = &self.connection_limit {
             limit.validate()?;
         }
@@ -102,19 +100,16 @@ impl Default for RedisAdmissionConfig {
 
 #[derive(Clone)]
 pub struct RedisAdmissionController {
-    connection: ConnectionManager,
+    connection: RedisConnection,
     config: RedisAdmissionConfig,
 }
 
 impl RedisAdmissionController {
     pub async fn connect(url: &str, config: RedisAdmissionConfig) -> Result<Self> {
-        config.validate()?;
-        let client = redis::Client::open(url).map_err(redis_error)?;
-        let connection = client.get_connection_manager().await.map_err(redis_error)?;
-        Ok(Self { connection, config })
+        Self::from_connection(standalone_connection(url).await?, config)
     }
 
-    pub fn new(connection: ConnectionManager, config: RedisAdmissionConfig) -> Result<Self> {
+    fn from_connection(connection: RedisConnection, config: RedisAdmissionConfig) -> Result<Self> {
         config.validate()?;
         Ok(Self { connection, config })
     }
@@ -234,6 +229,11 @@ impl AdmissionController for RedisAdmissionController {
         let user_ban = identity
             .map(|identity| self.user_ban_key(identity))
             .unwrap_or_else(|| self.key("ban:user:anonymous"));
+        let stage = match request.stage {
+            AdmissionStage::Connected => "connected",
+            AdmissionStage::Authenticated => "authenticated",
+            _ => return Err(Error::InvalidConfig("unsupported admission stage".into())),
+        };
         let mut connection = self.connection.clone();
         let values: Vec<Vec<u8>> = Script::new(ADMIT)
             .key(self.key("maintenance"))
@@ -241,10 +241,7 @@ impl AdmissionController for RedisAdmissionController {
             .key(user_ban)
             .key(self.key(&format!("rate:ip:{}", request.remote_ip)))
             .key(self.user_rate_key(identity))
-            .arg(match request.stage {
-                AdmissionStage::Connected => "connected",
-                AdmissionStage::Authenticated => "authenticated",
-            })
+            .arg(stage)
             .arg(connection_maximum)
             .arg(connection_window)
             .arg(authentication_maximum)

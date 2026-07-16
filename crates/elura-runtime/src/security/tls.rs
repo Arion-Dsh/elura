@@ -11,9 +11,10 @@ use rustls::{ClientConfig, RootCertStore, ServerConfig, SignatureScheme};
 use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
-use super::BoxedInternalStream;
+use super::BoxedServiceStream;
 
 #[derive(Clone)]
+/// TLS configuration for outbound service-to-service connections.
 pub struct ClientTlsConfig {
     connector: TlsConnector,
     server_name: ServerName<'static>,
@@ -70,6 +71,7 @@ impl ClientTlsConfig {
         })
     }
 
+    /// Builds a TLS client whose certificate can be reloaded without restart.
     pub fn from_reloader(
         ca_file: Option<impl AsRef<Path>>,
         reloader: Arc<TlsCertificateReloader>,
@@ -87,8 +89,8 @@ impl ClientTlsConfig {
         })
     }
 
-    #[doc(hidden)]
-    pub async fn connect(&self, stream: TcpStream) -> Result<BoxedInternalStream> {
+    /// Upgrades a TCP stream to a client-side TLS service stream.
+    pub async fn connect(&self, stream: TcpStream) -> Result<BoxedServiceStream> {
         let stream = self
             .connector
             .connect(self.server_name.clone(), stream)
@@ -99,6 +101,7 @@ impl ClientTlsConfig {
 }
 
 #[derive(Clone)]
+/// TLS configuration for inbound service-to-service connections.
 pub struct ServerTlsConfig {
     acceptor: TlsAcceptor,
 }
@@ -142,6 +145,7 @@ impl ServerTlsConfig {
         })
     }
 
+    /// Builds a TLS server whose certificate can be reloaded without restart.
     pub fn from_reloader(
         reloader: Arc<TlsCertificateReloader>,
         client_ca_file: Option<impl AsRef<Path>>,
@@ -165,8 +169,8 @@ impl ServerTlsConfig {
         })
     }
 
-    #[doc(hidden)]
-    pub async fn accept(&self, stream: TcpStream) -> Result<BoxedInternalStream> {
+    /// Accepts TLS on a TCP stream and returns a service stream.
+    pub async fn accept(&self, stream: TcpStream) -> Result<BoxedServiceStream> {
         let stream = self
             .acceptor
             .accept(stream)
@@ -177,6 +181,7 @@ impl ServerTlsConfig {
 }
 
 #[derive(Debug)]
+/// Reloadable certificate and private-key resolver for client or server TLS.
 pub struct TlsCertificateReloader {
     certificate_file: PathBuf,
     key_file: PathBuf,
@@ -184,6 +189,7 @@ pub struct TlsCertificateReloader {
 }
 
 impl TlsCertificateReloader {
+    /// Loads a certificate and private key that can later be reloaded in place.
     pub fn new(certificate_file: impl Into<PathBuf>, key_file: impl Into<PathBuf>) -> Result<Self> {
         let certificate_file = certificate_file.into();
         let key_file = key_file.into();
@@ -195,6 +201,7 @@ impl TlsCertificateReloader {
         })
     }
 
+    /// Reloads the certificate and private key from their configured paths.
     pub fn reload(&self) -> Result<()> {
         let next = load_certified_key(&self.certificate_file, &self.key_file)?;
         *self

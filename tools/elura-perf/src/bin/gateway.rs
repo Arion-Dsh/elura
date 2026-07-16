@@ -4,11 +4,13 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use elura_adapters::redis::{RedisOnlineDirectory, RedisReplayStore};
+use elura_adapters::online::RedisOnlineDirectory;
+use elura_adapters::replay::RedisReplayStore;
 use elura_core::online::DuplicateLoginMode;
-use elura_core::ticket::TicketService;
+use elura_gateway::transport::{TcpConfig, TcpTransport};
 use elura_gateway::{Gateway, GatewayConfig, TcpWorldClient};
 use elura_runtime::lifecycle::shutdown_signal;
+use elura_runtime::observability::AdminServerConfig;
 use elura_runtime::security::InternalToken;
 use tokio::net::lookup_host;
 use tokio::sync::watch;
@@ -56,58 +58,55 @@ async fn main() -> AnyResult<()> {
         "elura-rs-perf-ticket-key-at-least-32-bytes-2026",
     );
 
-    let tickets = Arc::new(TicketService::new(
-        ticket_key.into_bytes(),
-        "auth",
-        "gateway",
-        Duration::from_secs(300),
-    )?);
     let replay = Arc::new(RedisReplayStore::connect(&redis_url, "elura-perf").await?);
     let online = Arc::new(
-        RedisOnlineDirectory::connect(
-            &redis_url,
-            "elura-perf:online".into(),
-            Duration::from_secs(60),
-        )
-        .await?,
+        RedisOnlineDirectory::connect(&redis_url, "elura-perf:online", Duration::from_secs(60))
+            .await?,
     );
     let world = Arc::new(
         TcpWorldClient::with_pool_size(world_address, 1 << 20, world_pool_size)?
             .with_max_in_flight_per_connection(world_in_flight)?
             .with_internal_token(internal_token),
     );
-    let gateway = Arc::new(
-        Gateway::new(
-            GatewayConfig {
-                listen,
-                max_connections,
-                max_connections_per_ip,
-                request_rate: 100_000,
-                request_burst: 100_000,
-                ip_request_rate,
-                ip_request_burst,
-                handler_timeout: Duration::from_secs(30),
-                idle_timeout: Duration::from_secs(300),
-                ..GatewayConfig::default()
-            },
-            tickets,
-            replay,
-            world,
-        )?
-        .with_online_directory(
-            gateway_id,
+    let mut config = GatewayConfig::default();
+    config.max_connections = max_connections;
+    config.max_connections_per_ip = max_connections_per_ip;
+    config.request_rate = 100_000;
+    config.request_burst = 100_000;
+    config.ip_request_rate = ip_request_rate;
+    config.ip_request_burst = ip_request_burst;
+    config.handler_timeout = Duration::from_secs(30);
+    config.idle_timeout = Duration::from_secs(300);
+    config.ticket.key = ticket_key;
+    config.ticket.issuer = "auth".into();
+    config.ticket.audience = "gateway".into();
+    config.ticket.ttl = Duration::from_secs(300);
+    let mut tcp_config = TcpConfig::default();
+    tcp_config.listen = listen;
+    let tcp = TcpTransport::new(tcp_config)?;
+    let gateway = Gateway::new(config)
+        .transport(tcp)
+        .replay_store(replay)
+        .world_client(world)
+        .online_directory(
+            gateway_id.clone(),
             online,
             Duration::from_secs(60),
             Duration::from_secs(20),
             DuplicateLoginMode::AllowMultiple,
-        )?,
-    );
+        )
+        .build()?;
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     tokio::spawn(async move {
         let _ = shutdown_signal().await;
         let _ = shutdown_tx.send(true);
     });
-    gateway.serve_tcp(shutdown_rx).await?;
+    let admin = AdminServerConfig::new(
+        env_parse("ELURA_GATEWAY_ADMIN_LISTEN", "127.0.0.1:17001")?,
+        "gateway",
+        gateway_id,
+    );
+    gateway.serve(admin, shutdown_rx).await?;
     Ok(())
 }

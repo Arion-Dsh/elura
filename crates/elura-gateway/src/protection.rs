@@ -10,6 +10,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+#[non_exhaustive]
 pub struct ProtectionConfig {
     pub max_concurrent: usize,
     pub queue_timeout: Duration,
@@ -29,6 +30,7 @@ impl Default for ProtectionConfig {
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CircuitState {
     Closed,
     Open,

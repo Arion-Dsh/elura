@@ -16,6 +16,7 @@ use super::kube_error;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct EndpointWatcherConfig {
     pub namespace: String,
     pub service: String,
@@ -26,7 +27,25 @@ pub struct EndpointWatcherConfig {
 }
 
 impl EndpointWatcherConfig {
-    fn validate(&self) -> Result<()> {
+    /// Creates an endpoint watcher for a World service and route scope.
+    pub fn new(
+        namespace: impl Into<String>,
+        service: impl Into<String>,
+        port_name: impl Into<String>,
+        region_id: u32,
+        realm_id: u32,
+    ) -> Self {
+        Self {
+            namespace: namespace.into(),
+            service: service.into(),
+            port_name: port_name.into(),
+            region_id,
+            realm_id,
+            route: 0,
+        }
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
         if self.namespace.trim().is_empty()
             || self.service.trim().is_empty()
             || self.port_name.trim().is_empty()

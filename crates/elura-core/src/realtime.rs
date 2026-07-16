@@ -16,6 +16,7 @@ mod replay_player;
 pub use replay_player::{ReplayDriver, ReplayStats, play_replay};
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct RoomConfig {
     pub tick_rate: u32,
     pub input_delay_ticks: u64,

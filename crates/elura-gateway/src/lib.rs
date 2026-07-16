@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
+use axum::Router;
 use bytes::Bytes;
 use elura_core::account_version::{AccountVersionKey, AccountVersionStore};
 use elura_core::gateway_world::{GatewayWorldCommand, WorldCommand};
@@ -34,34 +35,38 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, watch};
+use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tokio_util::codec::Framed;
-use tracing::{Instrument, debug, info};
+use tracing::{Instrument, debug};
 use uuid::Uuid;
 
 use crate::protection::{BackendProtector, ProtectionConfig, ProtectionStats};
 use crate::transport::{
     AccountVersionPolicy, AccountVersionSettings, AdmissionController, AdmissionPolicy,
     AdmissionRequest, AdmissionSettings, AdmissionStage, ConnectionLimiter, DrainController,
-    KeyedRateLimiter, ProxyProtocolConfig, QuicConfig, ResponseCache, SessionConnection,
-    SessionEventKind, SessionObserver, SessionService, WebSocketConfig, notify_session_observers,
-    proxy_client_address,
+    GatewayTransport, KeyedRateLimiter, RegisteredGatewayTransport, ResponseCache,
+    SessionConnection, SessionEventKind, SessionIoConfig, SessionObserver, SessionService,
+    notify_session_observers, register, serve_stream,
 };
-use elura_runtime::internal::{BoxedInternalStream, ClientTlsConfig, InternalToken};
-use elura_runtime::observability::ReadinessProbe;
-use observability::Readiness;
-mod launcher;
+use elura_runtime::observability::{AdminServerConfig, ReadinessProbe};
+use elura_runtime::security::{BoxedServiceStream, ClientTlsConfig, InternalToken};
+use observability::{AdminServer, AdmissionAdmin, GatewayAdmin, Readiness};
+mod builder;
+mod gateway;
+mod interceptor;
 pub mod observability;
 pub mod protection;
 mod routing;
 pub mod transport;
 
-#[doc(hidden)]
-pub use launcher::GatewayParts;
-pub use launcher::{
-    GatewayExtension, GatewayInfrastructure, GatewayLaunchConfig, GatewayLauncher,
-    GatewayProxyProtocolLaunchConfig, GatewayRealmAdmissionConfig, GatewayTicketConfig,
-    GatewayWorldTlsConfig,
+pub use gateway::Gateway;
+pub use interceptor::{
+    GatewayInterceptContext, GatewayInterceptor, GatewayNext, GatewayRequest, GatewayResponse,
+};
+
+pub use builder::{
+    GatewayInfrastructure, GatewayRealmAdmissionConfig, GatewayTicketConfig, GatewayWorldTlsConfig,
 };
 pub(crate) use routing::{MemoryWorldRouteDirectory, RouteWorldClient};
 
@@ -71,10 +76,11 @@ pub struct RouteRateLimit {
     pub burst: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Transport-neutral Gateway Session and process configuration.
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+#[non_exhaustive]
 pub struct GatewayConfig {
-    pub listen: SocketAddr,
     pub max_connections: usize,
     pub max_connections_per_ip: usize,
     pub max_payload: usize,
@@ -95,20 +101,24 @@ pub struct GatewayConfig {
     pub handler_timeout: Duration,
     pub write_timeout: Duration,
     pub heartbeat_interval: Duration,
-    pub tcp_keepalive: Duration,
     pub response_cache_ttl: Duration,
     pub response_cache_capacity: usize,
     /// Maximum response payload bytes retained by one Session's replay cache.
     pub response_cache_max_bytes: usize,
-    pub tls_handshake_timeout: Duration,
     pub shutdown_timeout: Duration,
     pub readiness_timeout: Duration,
+    pub ticket: GatewayTicketConfig,
+    #[serde(skip)]
+    pub internal_token: Option<String>,
+    pub protection: Option<ProtectionConfig>,
+    pub world_tls: Option<GatewayWorldTlsConfig>,
+    pub world_routing: GatewayWorldRoutingConfig,
+    pub realm_admission: Option<GatewayRealmAdmissionConfig>,
 }
 
 impl Default for GatewayConfig {
     fn default() -> Self {
         Self {
-            listen: "127.0.0.1:17000".parse().expect("static address"),
             max_connections: 10_000,
             max_connections_per_ip: 100,
             max_payload: 1 << 20,
@@ -135,13 +145,17 @@ impl Default for GatewayConfig {
             handler_timeout: Duration::from_secs(5),
             write_timeout: Duration::from_secs(10),
             heartbeat_interval: Duration::from_secs(30),
-            tcp_keepalive: Duration::from_secs(30),
             response_cache_ttl: Duration::from_secs(10),
             response_cache_capacity: 128,
             response_cache_max_bytes: 1 << 20,
-            tls_handshake_timeout: Duration::from_secs(5),
             shutdown_timeout: Duration::from_secs(10),
             readiness_timeout: Duration::from_secs(2),
+            ticket: GatewayTicketConfig::default(),
+            internal_token: None,
+            protection: None,
+            world_tls: None,
+            world_routing: GatewayWorldRoutingConfig::default(),
+            realm_admission: None,
         }
     }
 }
@@ -165,11 +179,9 @@ impl GatewayConfig {
             || self.handler_timeout.is_zero()
             || self.write_timeout.is_zero()
             || self.heartbeat_interval.is_zero()
-            || self.tcp_keepalive.is_zero()
             || self.response_cache_ttl.is_zero()
             || self.response_cache_capacity == 0
             || self.response_cache_max_bytes == 0
-            || self.tls_handshake_timeout.is_zero()
             || self.shutdown_timeout.is_zero()
             || self.readiness_timeout.is_zero()
         {
@@ -184,6 +196,12 @@ impl GatewayConfig {
         {
             return Err(Error::InvalidConfig("invalid route rate limit".into()));
         }
+        if self.ticket.ttl.is_zero() {
+            return Err(Error::InvalidConfig(
+                "gateway ticket TTL must be positive".into(),
+            ));
+        }
+        self.world_routing.validate()?;
         Ok(())
     }
 }
@@ -535,12 +553,12 @@ fn validate_world_connection_in_flight(limit: usize) -> Result<()> {
 
 async fn connect_world(
     config: &WorldConnectionConfig,
-) -> Result<Framed<BoxedInternalStream, FrameCodec>> {
+) -> Result<Framed<BoxedServiceStream, FrameCodec>> {
     let stream = timeout(config.connect_timeout, TcpStream::connect(config.address))
         .await
         .map_err(|_| Error::Timeout)??;
     stream.set_nodelay(true)?;
-    let stream: BoxedInternalStream = match &config.tls {
+    let stream: BoxedServiceStream = match &config.tls {
         Some(tls) => timeout(config.connect_timeout, tls.connect(stream))
             .await
             .map_err(|_| Error::Timeout)??,
@@ -712,7 +730,7 @@ struct NamedReadinessProbe {
     probe: Arc<dyn ReadinessProbe>,
 }
 
-pub struct Gateway {
+pub struct GatewayServer {
     config: GatewayConfig,
     tickets: Arc<TicketService>,
     replay: Arc<dyn ReplayStore>,
@@ -720,7 +738,6 @@ pub struct Gateway {
     sessions: SessionSenders,
     ownership: Option<(u32, Arc<dyn OwnershipResolver>)>,
     protector: Option<Arc<BackendProtector>>,
-    tls: Option<elura_runtime::internal::ServerTlsConfig>,
     connections: Arc<tokio::sync::Semaphore>,
     per_ip_connections: Arc<ConnectionLimiter>,
     ip_requests: Option<Arc<KeyedRateLimiter<IpAddr>>>,
@@ -730,15 +747,30 @@ pub struct Gateway {
     push: Option<Arc<dyn PushTransport>>,
     session_control: Option<Arc<dyn SessionControlTransport>>,
     admission: Option<AdmissionPolicy>,
-    proxy_protocol: Option<ProxyProtocolConfig>,
     observers: Vec<Arc<dyn SessionObserver>>,
     account_versions: Option<AccountVersionPolicy>,
+    interceptors: Vec<Arc<dyn GatewayInterceptor>>,
     drain: Arc<DrainController>,
     stats: Arc<GatewayStats>,
     readiness_probes: Vec<NamedReadinessProbe>,
+    admin: Option<AdminServerConfig>,
+    admission_admin: Option<Arc<dyn AdmissionAdmin>>,
+    discovery: Option<GatewayDiscovery>,
+    transports: Vec<Arc<dyn RegisteredGatewayTransport>>,
+    http: Vec<GatewayHttpServer>,
 }
 
-impl Gateway {
+struct GatewayDiscovery {
+    discovery: Arc<dyn WorldDiscovery>,
+    updater: Arc<dyn WorldRouteUpdater>,
+}
+
+struct GatewayHttpServer {
+    listen: SocketAddr,
+    router: Router,
+}
+
+impl GatewayServer {
     pub fn new(
         config: GatewayConfig,
         tickets: Arc<TicketService>,
@@ -762,7 +794,6 @@ impl Gateway {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             ownership: None,
             protector: None,
-            tls: None,
             connections: Arc::new(tokio::sync::Semaphore::new(max_connections)),
             per_ip_connections: Arc::new(ConnectionLimiter::new(max_connections_per_ip)),
             ip_requests,
@@ -772,13 +803,77 @@ impl Gateway {
             push: None,
             session_control: None,
             admission: None,
-            proxy_protocol: None,
             observers: Vec::new(),
             account_versions: None,
+            interceptors: Vec::new(),
             drain: Arc::new(DrainController::default()),
             stats: Arc::new(GatewayStats::default()),
             readiness_probes: Vec::new(),
+            admin: None,
+            admission_admin: None,
+            discovery: None,
+            transports: Vec::new(),
+            http: Vec::new(),
         })
+    }
+
+    pub(crate) fn with_process_config(
+        mut self,
+        admission_admin: Option<Arc<dyn AdmissionAdmin>>,
+        discovery: Option<(Arc<dyn WorldDiscovery>, Arc<dyn WorldRouteUpdater>)>,
+        transports: Vec<Arc<dyn RegisteredGatewayTransport>>,
+    ) -> Self {
+        self.admission_admin = admission_admin;
+        self.discovery =
+            discovery.map(|(discovery, updater)| GatewayDiscovery { discovery, updater });
+        self.transports.extend(transports);
+        self
+    }
+
+    /// Adds a client transport endpoint to an advanced, manually assembled server.
+    pub fn with_transport<T>(mut self, transport: T) -> Result<Self>
+    where
+        T: GatewayTransport,
+    {
+        transport.validate()?;
+        self.transports.push(register(transport));
+        Ok(self)
+    }
+
+    pub(crate) fn add_http(&mut self, listen: String, router: Router) -> Result<()> {
+        let listen = listen
+            .parse()
+            .map_err(|_| Error::InvalidConfig(format!("invalid HTTP listen address {listen}")))?;
+        self.http.push(GatewayHttpServer { listen, router });
+        Ok(())
+    }
+
+    pub(crate) fn validate_listeners(&self) -> Result<()> {
+        let mut listeners = Vec::new();
+        if let Some(admin) = self.admin.as_ref() {
+            listeners.push(("admin", admin.listen));
+        }
+        for transport in &self.transports {
+            listeners.push((transport.name(), transport.listen()));
+        }
+        for http in &self.http {
+            listeners.push(("http", http.listen));
+        }
+        for (index, (left_name, left)) in listeners.iter().enumerate() {
+            for (right_name, right) in listeners.iter().skip(index + 1) {
+                if left.port() == right.port()
+                    && (left.ip().is_unspecified()
+                        || right.ip().is_unspecified()
+                        || left.ip() == right.ip())
+                {
+                    return Err(Error::InvalidConfig(format!(
+                        "{left_name} and {right_name} listeners conflict at port {}",
+                        left.port()
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn with_ownership(
@@ -798,11 +893,6 @@ impl Gateway {
     pub fn with_protection(mut self, config: ProtectionConfig) -> Result<Self> {
         self.protector = Some(Arc::new(BackendProtector::new(config)?));
         Ok(self)
-    }
-
-    pub fn with_tls(mut self, tls: elura_runtime::internal::ServerTlsConfig) -> Self {
-        self.tls = Some(tls);
-        self
     }
 
     pub fn with_online_directory(
@@ -855,14 +945,16 @@ impl Gateway {
         Ok(self)
     }
 
-    pub fn with_proxy_protocol(mut self, config: ProxyProtocolConfig) -> Result<Self> {
-        config.validate()?;
-        self.proxy_protocol = Some(config);
-        Ok(self)
-    }
-
     pub fn with_session_observer(mut self, observer: Arc<dyn SessionObserver>) -> Self {
         self.observers.push(observer);
+        self
+    }
+
+    pub fn with_interceptor<I>(mut self, interceptor: I) -> Self
+    where
+        I: GatewayInterceptor,
+    {
+        self.interceptors.push(Arc::new(interceptor));
         self
     }
 
@@ -974,6 +1066,12 @@ impl Gateway {
 
     async fn apply_session_control_local(&self, event: &SessionControlEvent) -> Result<usize> {
         event.validate()?;
+        let action = match event.kind {
+            SessionControlKind::Login => SessionControlAction::DuplicateLogin,
+            SessionControlKind::ForceLogout => SessionControlAction::ForceLogout,
+            SessionControlKind::VersionChanged => SessionControlAction::AccountVersionChanged,
+            _ => return Ok(0),
+        };
         let index = self
             .session_index
             .read()
@@ -993,6 +1091,7 @@ impl Gateway {
                         event.session_id.is_none_or(|target| target == session_id)
                     }
                     SessionControlKind::VersionChanged => identity.generation < event.generation,
+                    _ => false,
                 };
                 selected.then_some(session_id)
             })
@@ -1010,11 +1109,6 @@ impl Gateway {
         };
         let mut delivered = 0;
         for handle in handles {
-            let action = match event.kind {
-                SessionControlKind::Login => SessionControlAction::DuplicateLogin,
-                SessionControlKind::ForceLogout => SessionControlAction::ForceLogout,
-                SessionControlKind::VersionChanged => SessionControlAction::AccountVersionChanged,
-            };
             disconnect_handle_with_action(handle, action, &event.reason)?;
             delivered += 1;
         }
@@ -1112,159 +1206,149 @@ impl Gateway {
         Err(Error::Timeout)
     }
 
-    pub async fn serve(self, shutdown: watch::Receiver<bool>) -> Result<()> {
-        Arc::new(self).serve_tcp(shutdown).await
+    /// Runs until Ctrl-C or until one of the supervised services exits.
+    pub async fn run(self, admin: AdminServerConfig) -> Result<()> {
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let signal = tokio::spawn(async move {
+            let _ = elura_runtime::lifecycle::shutdown_signal().await;
+            let _ = shutdown_tx.send(true);
+        });
+        let result = self.serve(admin, shutdown_rx).await;
+        signal.abort();
+        result
     }
 
-    /// Serves the public TCP endpoint. Use an `Arc<Gateway>` when multiple
-    /// client transports need to share Sessions and connection limits.
-    pub async fn serve_tcp(self: Arc<Self>, mut shutdown: watch::Receiver<bool>) -> Result<()> {
-        let listener = TcpListener::bind(self.config.listen).await?;
-        // Bound sockets before PROXY protocol and TLS handshakes allocate work.
-        // The Session-level semaphore remains the shared limit across TCP,
-        // WebSocket and QUIC transports.
-        let preconnections = Arc::new(tokio::sync::Semaphore::new(self.config.max_connections));
-        info!(address = %self.config.listen, "gateway listening");
-        if *shutdown.borrow() {
-            self.begin_drain();
-            drop(listener);
-            return self.drain().await;
+    pub async fn serve(
+        mut self,
+        admin: AdminServerConfig,
+        shutdown: watch::Receiver<bool>,
+    ) -> Result<()> {
+        self.admin = Some(admin);
+        Arc::new(self).serve_embedded(shutdown).await
+    }
+
+    /// Serves an embedded Gateway without starting a separate administration endpoint.
+    pub async fn serve_embedded(
+        self: Arc<Self>,
+        mut external_shutdown: watch::Receiver<bool>,
+    ) -> Result<()> {
+        if self.transports.is_empty() {
+            return Err(Error::InvalidConfig(
+                "Gateway requires at least one transport".into(),
+            ));
         }
-        loop {
-            tokio::select! {
-                changed = shutdown.changed() => {
-                    if changed.is_err() || *shutdown.borrow() {
-                        self.begin_drain();
-                        break;
-                    }
+        self.validate_listeners()?;
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let forward_shutdown = shutdown_tx.clone();
+        let forward = tokio::spawn(async move {
+            if *external_shutdown.borrow() {
+                let _ = forward_shutdown.send(true);
+                return;
+            }
+            while external_shutdown.changed().await.is_ok() {
+                if *external_shutdown.borrow() {
+                    let _ = forward_shutdown.send(true);
+                    return;
                 }
-                accepted = listener.accept() => {
-                    let (stream, peer) = accepted?;
-                    let Ok(preconnection) = preconnections.clone().try_acquire_owned() else {
-                        self.stats.rejected.fetch_add(1, Ordering::Relaxed);
-                        continue;
-                    };
-                    let gateway = self.clone();
-                    let tls = self.tls.clone();
-                    let proxy_protocol = self.proxy_protocol.clone();
-                    let handshake_timeout = self.config.tls_handshake_timeout;
-                    let max_payload = self.config.max_payload;
-                    let inbound_capacity = self.config.inbound_queue;
-                    let response_capacity = self.config.response_queue;
-                    let push_capacity = self.config.push_queue;
-                    let write_timeout = self.config.write_timeout;
-                    let tcp_keepalive = self.config.tcp_keepalive;
-                    tokio::spawn(async move {
-                        let _preconnection = preconnection;
-                        let mut stream = stream;
-                        let client_peer = match crate::transport::tcp::configure_stream(
-                            &stream,
-                            tcp_keepalive,
-                        ) {
-                            Ok(()) => match &proxy_protocol {
-                                Some(config) => proxy_client_address(&mut stream, peer, config).await,
-                                None => Ok(peer),
-                            },
-                            Err(error) => Err(error),
-                        };
-                        let result = match client_peer {
-                            Ok(client_peer) => {
-                                let stream: Result<BoxedInternalStream> = match tls {
-                                    Some(tls) => timeout(handshake_timeout, tls.accept(stream))
-                                        .await
-                                        .map_err(|_| Error::Timeout)
-                                        .and_then(|result| result),
-                                    None => Ok(Box::new(stream)),
-                                };
-                                match stream {
-                                    Ok(stream) => crate::transport::tcp::serve_stream(
-                                        stream,
-                                        client_peer,
-                                        crate::transport::tcp::StreamConfig {
-                                            max_payload,
-                                            inbound_capacity,
-                                            response_capacity,
-                                            push_capacity,
-                                            write_timeout,
-                                        },
-                                        gateway,
-                                    ).await,
-                                    Err(error) => Err(error),
-                                }
+            }
+            let _ = forward_shutdown.send(true);
+        });
+
+        let mut tasks = JoinSet::new();
+        for transport in &self.transports {
+            let transport = transport.clone();
+            let gateway = self.clone();
+            let transport_shutdown = shutdown_rx.clone();
+            tasks.spawn(async move { transport.serve(gateway, transport_shutdown).await });
+        }
+        if let Some(config) = self.admin.clone() {
+            let mut gateway_admin = GatewayAdmin::new(self.clone());
+            if let Some(admission_admin) = self.admission_admin.clone() {
+                gateway_admin = gateway_admin.with_admission(admission_admin);
+            }
+            let admin = AdminServer::new(config, self.clone())?.with_gateway_admin(gateway_admin);
+            let admin_shutdown = shutdown_rx.clone();
+            tasks.spawn(async move { admin.serve(admin_shutdown).await });
+        }
+        if let Some(discovery) = self.discovery.as_ref() {
+            let discovery = discovery.discovery.clone();
+            let updater = self
+                .discovery
+                .as_ref()
+                .expect("discovery was checked")
+                .updater
+                .clone();
+            let discovery_shutdown = shutdown_rx.clone();
+            tasks.spawn(async move { discovery.run(updater, discovery_shutdown).await });
+        }
+        if self.push.is_some() {
+            let subscriber = self.clone();
+            let push_shutdown = shutdown_rx.clone();
+            tasks.spawn(async move { subscriber.subscribe_push(push_shutdown).await });
+        }
+        if self.session_control.is_some() {
+            let subscriber = self.clone();
+            let control_shutdown = shutdown_rx.clone();
+            tasks
+                .spawn(async move { subscriber.subscribe_session_control(control_shutdown).await });
+        }
+        for http in &self.http {
+            let listen = http.listen;
+            let router = http.router.clone();
+            let mut http_shutdown = shutdown_rx.clone();
+            tasks.spawn(async move {
+                let listener = TcpListener::bind(listen).await?;
+                axum::serve(listener, router)
+                    .with_graceful_shutdown(async move {
+                        while !*http_shutdown.borrow() {
+                            if http_shutdown.changed().await.is_err() {
+                                break;
                             }
-                            Err(error) => Err(error),
-                        };
-                        if let Err(error) = result {
-                            debug!(%peer, %error, "client disconnected");
                         }
-                    });
-                }
-            }
+                    })
+                    .await
+                    .map_err(Error::from)
+            });
         }
-        drop(listener);
-        self.drain().await
-    }
 
-    pub async fn serve_websocket(
-        self: Arc<Self>,
-        config: WebSocketConfig,
-        mut shutdown: watch::Receiver<bool>,
-    ) -> Result<()> {
-        let mut transport = std::pin::pin!(crate::transport::serve_websocket(
-            config,
-            self.clone(),
-            shutdown.clone(),
-        ));
-        tokio::select! {
-            biased;
-            _ = async {
-                if *shutdown.borrow() {
-                    return;
+        let mut first_error = None;
+        while let Some(completed) = tasks.join_next().await {
+            match completed {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) if first_error.is_none() => first_error = Some(error),
+                Err(error) if first_error.is_none() => {
+                    first_error = Some(Error::Internal(format!(
+                        "Gateway service task panicked: {error}"
+                    )))
                 }
-                while shutdown.changed().await.is_ok() {
-                    if *shutdown.borrow() {
-                        return;
-                    }
-                }
-            } => {
-                self.begin_drain();
-                self.drain().await?;
-                transport.await
+                _ => {}
             }
-            result = &mut transport => result,
+            let _ = shutdown_tx.send(true);
+        }
+        forward.abort();
+        let drain = self.drain().await;
+        match first_error {
+            Some(error) => Err(error),
+            None => drain,
         }
     }
 
-    /// Serves a TLS 1.3 QUIC endpoint using one bidirectional stream per
-    /// client Session.
-    pub async fn serve_quic(
+    pub(crate) async fn serve_transport_stream<S>(
         self: Arc<Self>,
-        config: QuicConfig,
-        mut shutdown: watch::Receiver<bool>,
-    ) -> Result<()> {
-        let mut transport = std::pin::pin!(crate::transport::serve_quic(
-            config,
-            self.clone(),
-            shutdown.clone(),
-        ));
-        tokio::select! {
-            biased;
-            _ = async {
-                if *shutdown.borrow() {
-                    return;
-                }
-                while shutdown.changed().await.is_ok() {
-                    if *shutdown.borrow() {
-                        return;
-                    }
-                }
-            } => {
-                self.begin_drain();
-                self.drain().await?;
-                transport.await
-            }
-            result = &mut transport => result,
-        }
+        peer: SocketAddr,
+        stream: S,
+    ) -> Result<()>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        let io = SessionIoConfig {
+            max_payload: self.config.max_payload,
+            inbound_capacity: self.config.inbound_queue,
+            response_capacity: self.config.response_queue,
+            push_capacity: self.config.push_queue,
+            write_timeout: self.config.write_timeout,
+        };
+        serve_stream(stream, peer, io, self).await
     }
 
     pub async fn push_session(&self, session_id: Uuid, route: u32, payload: Bytes) -> Result<()> {
@@ -1306,6 +1390,7 @@ struct ConnectionContext {
     admission: Option<AdmissionPolicy>,
     observers: Vec<Arc<dyn SessionObserver>>,
     account_versions: Option<AccountVersionPolicy>,
+    interceptors: Vec<Arc<dyn GatewayInterceptor>>,
     stats: Arc<GatewayStats>,
 }
 
@@ -1706,35 +1791,23 @@ impl ConnectionContext {
                     region_id = identity.region_id,
                     realm_id = identity.realm_id,
                 );
+                let context = GatewayInterceptContext::new(
+                    identity,
+                    session.id(),
+                    session.remote_ip(),
+                    trace_id,
+                    ownership,
+                );
+                let request = GatewayRequest::new(route, frame.request_id, frame.payload.clone());
+                let dispatch = WorldDispatch {
+                    world: self.world.as_ref(),
+                    protector: self.protector.as_deref(),
+                    deadline,
+                };
                 async move {
-                    let remaining = deadline
-                        .saturating_duration_since(tokio::time::Instant::now())
-                        .max(Duration::from_millis(1));
-                    let command = || {
-                        self.world.command(WorldRequest {
-                            identity,
-                            session_id: session.id(),
-                            trace_id,
-                            route,
-                            request_id: frame.request_id,
-                            payload: frame.payload.clone(),
-                            ownership,
-                            timeout: remaining,
-                        })
-                    };
-                    match &self.protector {
-                        Some(protector) => {
-                            protector
-                                .execute(command, |error| {
-                                    matches!(
-                                        error,
-                                        Error::Unavailable | Error::Timeout | Error::Io(_)
-                                    )
-                                })
-                                .await
-                        }
-                        None => command().await,
-                    }
+                    interceptor::run_interceptors(&self.interceptors, &dispatch, &context, &request)
+                        .await
+                        .map(GatewayResponse::into_payload)
                 }
                 .instrument(span)
                 .await
@@ -1861,8 +1934,51 @@ impl ConnectionContext {
     }
 }
 
+struct WorldDispatch<'a> {
+    world: &'a dyn WorldClient,
+    protector: Option<&'a BackendProtector>,
+    deadline: tokio::time::Instant,
+}
+
 #[async_trait]
-impl SessionService for Gateway {
+impl interceptor::GatewayDispatch for WorldDispatch<'_> {
+    async fn dispatch(
+        &self,
+        context: &GatewayInterceptContext,
+        request: &GatewayRequest,
+    ) -> Result<GatewayResponse> {
+        let remaining = self
+            .deadline
+            .saturating_duration_since(tokio::time::Instant::now())
+            .max(Duration::from_millis(1));
+        let command = || {
+            self.world.command(WorldRequest {
+                identity: context.identity().clone(),
+                session_id: context.session_id(),
+                trace_id: context.trace_id().to_owned(),
+                route: request.route(),
+                request_id: request.request_id(),
+                payload: request.payload().clone(),
+                ownership: context.ownership().cloned(),
+                timeout: remaining,
+            })
+        };
+        let payload = match self.protector {
+            Some(protector) => {
+                protector
+                    .execute(command, |error| {
+                        matches!(error, Error::Unavailable | Error::Timeout | Error::Io(_))
+                    })
+                    .await?
+            }
+            None => command().await?,
+        };
+        Ok(GatewayResponse::new(payload))
+    }
+}
+
+#[async_trait]
+impl SessionService for GatewayServer {
     async fn serve_session(&self, connection: SessionConnection) -> Result<()> {
         let _active_session = self.drain.enter()?;
         let _permit = match self.connections.clone().try_acquire_owned() {
@@ -1899,6 +2015,7 @@ impl SessionService for Gateway {
             admission: self.admission.clone(),
             observers: self.observers.clone(),
             account_versions: self.account_versions.clone(),
+            interceptors: self.interceptors.clone(),
             stats: self.stats.clone(),
         }
         .serve(connection)
@@ -1907,7 +2024,7 @@ impl SessionService for Gateway {
 }
 
 #[async_trait]
-impl PushHandler for Gateway {
+impl PushHandler for GatewayServer {
     async fn deliver(&self, request: PushRequest) -> Result<PushReceipt> {
         self.stats.pushes.fetch_add(1, Ordering::Relaxed);
         let result = self.deliver_inner(request).await;
@@ -1918,7 +2035,7 @@ impl PushHandler for Gateway {
     }
 }
 
-impl Gateway {
+impl GatewayServer {
     async fn deliver_inner(&self, request: PushRequest) -> Result<PushReceipt> {
         request.validate()?;
         let receipt = request.clone();
@@ -2009,14 +2126,14 @@ impl Gateway {
 }
 
 #[async_trait]
-impl SessionControlHandler for Gateway {
+impl SessionControlHandler for GatewayServer {
     async fn handle(&self, event: SessionControlEvent) -> Result<()> {
         self.apply_session_control_local(&event).await?;
         Ok(())
     }
 }
 
-impl Gateway {
+impl GatewayServer {
     async fn matching_sessions(
         &self,
         region_id: u32,
@@ -2242,13 +2359,14 @@ mod config_tests {
 
     #[test]
     fn serde_uses_defaults_and_rejects_unknown_fields() {
-        let config: GatewayConfig = serde_json::from_str(r#"{"listen":"0.0.0.0:17000"}"#).unwrap();
-        assert_eq!(config.listen.port(), 17000);
+        let config: GatewayConfig = serde_json::from_str("{}").unwrap();
         assert_eq!(
             config.max_connections,
             GatewayConfig::default().max_connections
         );
         assert!(serde_json::from_str::<GatewayConfig>(r#"{"unknown":true}"#).is_err());
+        assert!(serde_json::from_str::<GatewayConfig>(r#"{"listen":"0.0.0.0:17000"}"#).is_err());
+        assert!(serde_json::from_str::<GatewayConfig>(r#"{"admin":null}"#).is_err());
     }
 
     #[test]

@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use crate::Result;
+use crate::otp::{OtpCreateResult, OtpRecord, OtpStore, OtpVerifyResult};
 use async_trait::async_trait;
-use elura_core::Result;
-use elura_core::otp::{OtpCreateResult, OtpRecord, OtpStore, OtpVerifyResult};
 use subtle::ConstantTimeEq;
 
 struct Entry {

@@ -8,6 +8,7 @@ use crate::{Error, Result};
 /// Transport exposed by a public Gateway endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum GatewayEndpointTransport {
     /// A raw TCP ELR2 endpoint.
     Tcp,

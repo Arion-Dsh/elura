@@ -1,10 +1,13 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::registry::{IdentityProvider, IdentityProviderCapabilities, VerifiedIdentity};
+use super::registry::{
+    IdentityProvider, IdentityProviderCapabilities, IdentityRegistrationMode, ProviderName,
+    VerifiedIdentity,
+};
 use crate::{ProviderError, ProviderResult};
 
 #[async_trait]
@@ -28,12 +31,31 @@ impl<V> PhoneProvider<V> {
     }
 }
 
-#[derive(Deserialize)]
+/// Phone number and one-time-code credential accepted by [`PhoneProvider`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PhoneCredential {
-    phone: String,
-    challenge_id: String,
-    code: String,
+pub struct PhoneCredential {
+    /// E.164 phone number.
+    pub phone: String,
+    /// Opaque challenge identifier returned by the OTP issuer.
+    pub challenge_id: String,
+    /// One-time verification code.
+    pub code: String,
+}
+
+impl PhoneCredential {
+    /// Creates a phone credential.
+    pub fn new(
+        phone: impl Into<String>,
+        challenge_id: impl Into<String>,
+        code: impl Into<String>,
+    ) -> Self {
+        Self {
+            phone: phone.into(),
+            challenge_id: challenge_id.into(),
+            code: code.into(),
+        }
+    }
 }
 
 impl<V: OtpVerifier> PhoneProvider<V> {
@@ -56,7 +78,7 @@ impl<V: OtpVerifier> PhoneProvider<V> {
             )
             .await?;
         Ok(VerifiedIdentity {
-            provider: "phone".into(),
+            provider: ProviderName::parse("phone")?,
             subject: phone,
             union_id: None,
             attributes: HashMap::new(),
@@ -72,7 +94,7 @@ impl<V: OtpVerifier> IdentityProvider for PhoneProvider<V> {
     fn capabilities(&self) -> IdentityProviderCapabilities {
         IdentityProviderCapabilities {
             link: true,
-            registration: false,
+            registration: IdentityRegistrationMode::BindingStore,
         }
     }
     async fn authenticate(&self, credential: Value) -> ProviderResult<VerifiedIdentity> {

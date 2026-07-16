@@ -3,8 +3,8 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use elura_runtime::lifecycle::shutdown_signal;
-use elura_runtime::security::InternalToken;
-use elura_world::{WorldConfig, WorldServer};
+use elura_runtime::observability::AdminServerConfig;
+use elura_world::{World, WorldConfig};
 use tokio::sync::watch;
 
 type AnyError = Box<dyn Error + Send + Sync>;
@@ -27,31 +27,34 @@ where
 #[tokio::main]
 async fn main() -> AnyResult<()> {
     let handler_delay = Duration::from_micros(env_parse("ELURA_HANDLER_DELAY_US", "0")?);
-    let mut builder = WorldServer::builder(WorldConfig {
-        listen: env_parse("ELURA_WORLD_LISTEN", "0.0.0.0:18000")?,
-        max_connections: env_parse("ELURA_WORLD_MAX_CONNECTIONS", "1024")?,
-        max_in_flight_per_connection: env_parse("ELURA_WORLD_IN_FLIGHT", "64")?,
-        handler_timeout: Duration::from_secs(30),
-        ..WorldConfig::default()
-    })?;
-    builder.register_raw(ROUTE_ECHO, move |_context, payload| async move {
-        if !handler_delay.is_zero() {
-            tokio::time::sleep(handler_delay).await;
-        }
-        Ok(payload)
-    })?;
-    let world = builder
-        .build()?
-        .with_internal_token(InternalToken::new(env_value(
-            "ELURA_INTERNAL_TOKEN",
-            "elura-rs-perf-internal-token-2026",
-        ))?);
+    let mut config = WorldConfig::default();
+    config.listen = env_parse("ELURA_WORLD_LISTEN", "0.0.0.0:18000")?;
+    config.max_connections = env_parse("ELURA_WORLD_MAX_CONNECTIONS", "1024")?;
+    config.max_in_flight_per_connection = env_parse("ELURA_WORLD_IN_FLIGHT", "64")?;
+    config.handler_timeout = Duration::from_secs(30);
+    config.internal_token = Some(env_value(
+        "ELURA_INTERNAL_TOKEN",
+        "elura-rs-perf-internal-token-2026",
+    ));
+    let world = World::new(config)
+        .route_raw(ROUTE_ECHO, move |_context, payload| async move {
+            if !handler_delay.is_zero() {
+                tokio::time::sleep(handler_delay).await;
+            }
+            Ok(payload)
+        })
+        .build()?;
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     tokio::spawn(async move {
         let _ = shutdown_signal().await;
         let _ = shutdown_tx.send(true);
     });
-    world.serve(shutdown_rx).await?;
+    let admin = AdminServerConfig::new(
+        env_parse("ELURA_WORLD_ADMIN_LISTEN", "127.0.0.1:18001")?,
+        "world",
+        env_value("ELURA_WORLD_ID", "world-1"),
+    );
+    world.serve(admin, shutdown_rx).await?;
     Ok(())
 }

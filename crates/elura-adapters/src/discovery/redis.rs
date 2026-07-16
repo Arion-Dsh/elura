@@ -13,6 +13,10 @@ use tokio::sync::watch;
 use tracing::warn;
 use uuid::Uuid;
 
+use crate::redis::{
+    RedisConnection, cluster_connection, standalone_connection, validate_key_prefix,
+};
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RedisWorldLease {
@@ -21,7 +25,7 @@ struct RedisWorldLease {
 }
 
 pub struct RedisWorldRegistrar {
-    client: redis::Client,
+    connection: RedisConnection,
     key: String,
     channel: String,
     payload: Vec<u8>,
@@ -32,10 +36,8 @@ pub struct RedisWorldRegistrar {
 /// Configuration owned by the Redis World registration adapter.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct RedisWorldRegistrationConfig {
-    /// Injected by the upper application so secrets are not serialized.
-    #[serde(skip)]
-    pub url: String,
     pub key_prefix: String,
     pub advertise_address: String,
     pub region_id: u32,
@@ -47,12 +49,26 @@ pub struct RedisWorldRegistrationConfig {
 }
 
 impl RedisWorldRegistrationConfig {
-    pub fn build(self, world_id: impl Into<String>) -> Result<RedisWorldRegistrar> {
-        RedisWorldRegistrar::new(self, world_id.into())
+    /// Creates registration configuration with a 30-second TTL and 10-second renewal interval.
+    pub fn new(
+        key_prefix: impl Into<String>,
+        advertise_address: impl Into<String>,
+        region_id: u32,
+        realm_id: u32,
+    ) -> Self {
+        Self {
+            key_prefix: key_prefix.into(),
+            advertise_address: advertise_address.into(),
+            region_id,
+            realm_id,
+            route: 0,
+            ttl: Duration::from_secs(30),
+            renew_interval: Duration::from_secs(10),
+        }
     }
 
     fn registration(&self, world_id: String) -> Result<WorldRegistration> {
-        validate_redis(&self.url, &self.key_prefix)?;
+        validate_key_prefix(&self.key_prefix)?;
         if self.ttl.is_zero()
             || self.renew_interval.is_zero()
             || self.ttl < self.renew_interval.saturating_mul(2)
@@ -74,15 +90,38 @@ impl RedisWorldRegistrationConfig {
 }
 
 impl RedisWorldRegistrar {
-    pub fn new(config: RedisWorldRegistrationConfig, world_id: String) -> Result<Self> {
-        let registration = config.registration(world_id)?;
-        let client = redis::Client::open(config.url.as_str()).map_err(redis_error)?;
+    pub async fn connect(
+        url: &str,
+        world_id: impl Into<String>,
+        config: RedisWorldRegistrationConfig,
+    ) -> Result<Self> {
+        Self::from_connection(standalone_connection(url).await?, world_id, config)
+    }
+
+    pub async fn connect_cluster<I, S>(
+        nodes: I,
+        world_id: impl Into<String>,
+        config: RedisWorldRegistrationConfig,
+    ) -> Result<Self>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self::from_connection(cluster_connection(nodes).await?, world_id, config)
+    }
+
+    fn from_connection(
+        connection: RedisConnection,
+        world_id: impl Into<String>,
+        config: RedisWorldRegistrationConfig,
+    ) -> Result<Self> {
+        let registration = config.registration(world_id.into())?;
         let payload = serde_json::to_vec(&RedisWorldLease {
             lease_id: Uuid::new_v4(),
             registration: registration.clone(),
         })?;
         Ok(Self {
-            client,
+            connection,
             key: format!("{}:instance:{}", config.key_prefix, registration.world_id),
             channel: format!("{}:changes", config.key_prefix),
             payload,
@@ -99,11 +138,7 @@ impl WorldRegistrar for RedisWorldRegistrar {
     }
 
     async fn register(&self) -> Result<()> {
-        let mut connection = self
-            .client
-            .get_connection_manager()
-            .await
-            .map_err(redis_error)?;
+        let mut connection = self.connection.clone();
         let acquired: i64 = redis::Script::new(
             "if redis.call('EXISTS',KEYS[1])==1 then return 0 end redis.call('SET',KEYS[1],ARGV[1],'PX',ARGV[2]);redis.call('PUBLISH',ARGV[3],'changed');return 1",
         )
@@ -122,11 +157,7 @@ impl WorldRegistrar for RedisWorldRegistrar {
     }
 
     async fn renew(&self) -> Result<()> {
-        let mut connection = self
-            .client
-            .get_connection_manager()
-            .await
-            .map_err(redis_error)?;
+        let mut connection = self.connection.clone();
         let renewed: i64 = redis::Script::new(
             "if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('PEXPIRE',KEYS[1],ARGV[2]) end return 0",
         )
@@ -144,11 +175,7 @@ impl WorldRegistrar for RedisWorldRegistrar {
     }
 
     async fn unregister(&self) -> Result<()> {
-        let mut connection = self
-            .client
-            .get_connection_manager()
-            .await
-            .map_err(redis_error)?;
+        let mut connection = self.connection.clone();
         redis::Script::new(
             "if redis.call('GET',KEYS[1])==ARGV[1] then redis.call('DEL',KEYS[1]);redis.call('PUBLISH',ARGV[2],'changed');return 1 end return 0",
         )
@@ -170,6 +197,7 @@ struct RouteScope {
 }
 
 pub struct RedisWorldDiscovery {
+    connection: RedisConnection,
     client: redis::Client,
     key_prefix: String,
     channel: String,
@@ -180,43 +208,51 @@ pub struct RedisWorldDiscovery {
 /// Configuration owned by the Redis World discovery adapter.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct RedisWorldDiscoveryConfig {
-    /// Injected by the upper application so secrets are not serialized.
-    #[serde(skip)]
-    pub url: String,
     pub key_prefix: String,
     pub refresh_interval: Duration,
 }
 
 impl RedisWorldDiscoveryConfig {
-    pub fn build(self) -> Result<RedisWorldDiscovery> {
-        RedisWorldDiscovery::new(&self.url, &self.key_prefix, self.refresh_interval)
+    /// Creates discovery configuration with a five-second refresh interval.
+    pub fn new(key_prefix: impl Into<String>) -> Self {
+        Self {
+            key_prefix: key_prefix.into(),
+            refresh_interval: Duration::from_secs(5),
+        }
     }
 }
 
 impl RedisWorldDiscovery {
-    pub fn new(url: &str, key_prefix: &str, refresh_interval: Duration) -> Result<Self> {
-        validate_redis(url, key_prefix)?;
-        if refresh_interval.is_zero() {
+    pub async fn connect(url: &str, config: RedisWorldDiscoveryConfig) -> Result<Self> {
+        Self::from_connection(standalone_connection(url).await?, config)
+    }
+
+    fn from_connection(
+        connection: RedisConnection,
+        config: RedisWorldDiscoveryConfig,
+    ) -> Result<Self> {
+        validate_key_prefix(&config.key_prefix)?;
+        if config.refresh_interval.is_zero() {
             return Err(Error::InvalidConfig(
                 "Redis World discovery refresh interval must be positive".into(),
             ));
         }
+        let client = connection.pubsub_client()?;
+        let key_prefix = config.key_prefix;
         Ok(Self {
-            client: redis::Client::open(url).map_err(redis_error)?,
-            key_prefix: key_prefix.into(),
+            connection,
+            client,
+            key_prefix: key_prefix.clone(),
             channel: format!("{key_prefix}:changes"),
-            refresh_interval,
+            refresh_interval: config.refresh_interval,
             known_scopes: Mutex::new(BTreeSet::new()),
         })
     }
 
     async fn synchronize(&self, updater: &Arc<dyn WorldRouteUpdater>) -> Result<()> {
-        let mut connection = self
-            .client
-            .get_connection_manager()
-            .await
-            .map_err(redis_error)?;
+        let mut connection = self.connection.clone();
         let mut cursor = 0_u64;
         let mut leases = Vec::new();
         loop {
@@ -344,20 +380,6 @@ impl RedisWorldDiscovery {
     }
 }
 
-fn validate_redis(url: &str, prefix: &str) -> Result<()> {
-    if url.trim().is_empty()
-        || prefix.is_empty()
-        || !prefix
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
-    {
-        return Err(Error::InvalidConfig(
-            "Redis URL and safe World discovery key prefix are required".into(),
-        ));
-    }
-    Ok(())
-}
-
 #[async_trait]
 impl WorldDiscovery for RedisWorldDiscovery {
     async fn run(
@@ -433,9 +455,8 @@ mod tests {
         }
     }
 
-    fn registration(url: String, key_prefix: String) -> RedisWorldRegistrationConfig {
+    fn registration(key_prefix: String) -> RedisWorldRegistrationConfig {
         RedisWorldRegistrationConfig {
-            url,
             key_prefix,
             advertise_address: "127.0.0.1:18000".into(),
             region_id: 1,
@@ -447,15 +468,11 @@ mod tests {
     }
 
     #[test]
-    fn registration_config_owns_validation_and_redacts_redis_url() {
-        let mut config = registration(
-            "redis://user:secret@127.0.0.1/".into(),
-            "elura:worlds".into(),
-        );
+    fn registration_config_owns_validation() {
+        let mut config = registration("elura:worlds".into());
         config.ttl = Duration::from_secs(5);
         config.renew_interval = Duration::from_secs(3);
-        assert!(config.clone().build("world-1").is_err());
-        assert!(!serde_json::to_string(&config).unwrap().contains("secret"));
+        assert!(config.registration("world-1".into()).is_err());
     }
 
     #[tokio::test]
@@ -464,14 +481,25 @@ mod tests {
             return;
         };
         let key_prefix = format!("elura:test:worlds:{}", Uuid::new_v4());
-        let config = registration(redis_url.clone(), key_prefix.clone());
-        let registrar = config.clone().build("world-1").unwrap();
+        let config = registration(key_prefix.clone());
+        let registrar = RedisWorldRegistrar::connect(&redis_url, "world-1", config.clone())
+            .await
+            .unwrap();
         registrar.register().await.unwrap();
-        let replacement = config.build("world-1").unwrap();
+        let replacement = RedisWorldRegistrar::connect(&redis_url, "world-1", config)
+            .await
+            .unwrap();
         assert!(replacement.register().await.is_err());
 
-        let discovery =
-            RedisWorldDiscovery::new(&redis_url, &key_prefix, Duration::from_secs(5)).unwrap();
+        let discovery = RedisWorldDiscovery::connect(
+            &redis_url,
+            RedisWorldDiscoveryConfig {
+                key_prefix,
+                refresh_interval: Duration::from_secs(5),
+            },
+        )
+        .await
+        .unwrap();
         let recorder = Arc::new(RecordingUpdater::default());
         let updater: Arc<dyn WorldRouteUpdater> = recorder.clone();
         discovery.synchronize(&updater).await.unwrap();

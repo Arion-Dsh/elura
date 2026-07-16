@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result};
 
+mod memory;
+
+pub use memory::MemoryOtpStore;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OtpRecord {
     pub subject_key: String,
@@ -28,12 +32,14 @@ impl OtpRecord {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum OtpCreateResult {
     Stored,
     Cooldown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum OtpVerifyResult {
     Valid,
     Invalid,

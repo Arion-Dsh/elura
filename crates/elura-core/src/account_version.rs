@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 use crate::session::Identity;
 use crate::{Error, Result};
 
+mod memory;
+
+pub use memory::MemoryAccountVersionStore;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AccountVersionKey {
     pub region_id: u32,

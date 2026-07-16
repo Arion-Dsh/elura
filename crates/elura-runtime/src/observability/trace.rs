@@ -1,9 +1,11 @@
 use uuid::Uuid;
 
+/// Generates a lowercase 128-bit trace identifier without separators.
 pub fn new_trace_id() -> String {
     Uuid::new_v4().simple().to_string()
 }
 
+/// Normalizes a valid trace identifier or replaces it with a newly generated one.
 pub fn ensure_trace_id(candidate: &str) -> String {
     if candidate.len() == 32 && candidate.bytes().all(|value| value.is_ascii_hexdigit()) {
         candidate.to_ascii_lowercase()

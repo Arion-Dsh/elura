@@ -4,14 +4,15 @@ use std::time::Duration;
 use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::registry::{IdentityProvider, VerifiedIdentity};
+use super::registry::{IdentityProvider, ProviderName, VerifiedIdentity};
 use crate::{ProviderError, ProviderResult};
 
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct CodeExchangeConfig {
     pub name: String,
     pub endpoint: String,
@@ -19,6 +20,26 @@ pub struct CodeExchangeConfig {
     pub client_secret: String,
     pub subject_field: String,
     pub union_id_field: Option<String>,
+}
+
+impl CodeExchangeConfig {
+    /// Creates a code-exchange provider configuration.
+    pub fn new(
+        name: impl Into<String>,
+        endpoint: impl Into<String>,
+        client_id: impl Into<String>,
+        client_secret: impl Into<String>,
+        subject_field: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            endpoint: endpoint.into(),
+            client_id: client_id.into(),
+            client_secret: client_secret.into(),
+            subject_field: subject_field.into(),
+            union_id_field: None,
+        }
+    }
 }
 
 pub struct CodeExchangeProvider {
@@ -45,10 +66,19 @@ impl CodeExchangeProvider {
     }
 }
 
-#[derive(Deserialize)]
+/// Credential accepted by code-exchange and platform identity providers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CodeCredential {
-    code: String,
+pub struct CodeCredential {
+    /// Short-lived authorization code received from the client platform.
+    pub code: String,
+}
+
+impl CodeCredential {
+    /// Creates a code credential.
+    pub fn new(code: impl Into<String>) -> Self {
+        Self { code: code.into() }
+    }
 }
 
 #[async_trait]
@@ -75,6 +105,9 @@ impl IdentityProvider for CodeExchangeProvider {
             .await
             .map_err(|_| ProviderError::Unavailable)?;
         let status = response.status();
+        if status.as_u16() == 429 {
+            return Err(ProviderError::RateLimited { retry_after: None });
+        }
         if status.is_client_error() {
             return Err(ProviderError::InvalidCredentials);
         }
@@ -92,6 +125,7 @@ impl IdentityProvider for CodeExchangeProvider {
 }
 
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct OAuth2Config {
     pub name: String,
     pub client_id: String,
@@ -104,6 +138,32 @@ pub struct OAuth2Config {
     pub scopes: Vec<String>,
     pub subject_field: String,
     pub union_id_field: Option<String>,
+}
+
+impl OAuth2Config {
+    /// Creates OAuth 2.0 configuration for a public client with no default scopes.
+    pub fn new(
+        name: impl Into<String>,
+        client_id: impl Into<String>,
+        redirect_uri: impl Into<String>,
+        authorization_endpoint: impl Into<String>,
+        token_endpoint: impl Into<String>,
+        userinfo_endpoint: impl Into<String>,
+        subject_field: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            client_id: client_id.into(),
+            client_secret: String::new(),
+            redirect_uri: redirect_uri.into(),
+            authorization_endpoint: authorization_endpoint.into(),
+            token_endpoint: token_endpoint.into(),
+            userinfo_endpoint: userinfo_endpoint.into(),
+            scopes: Vec::new(),
+            subject_field: subject_field.into(),
+            union_id_field: None,
+        }
+    }
 }
 
 pub struct OAuth2Provider {
@@ -156,11 +216,24 @@ impl OAuth2Provider {
     }
 }
 
-#[derive(Deserialize)]
+/// OAuth 2.0 authorization-code credential with a PKCE verifier.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct OAuthCredential {
-    code: String,
-    code_verifier: String,
+pub struct OAuth2Credential {
+    /// Authorization code returned by the provider.
+    pub code: String,
+    /// Original PKCE verifier used to build the authorization URL.
+    pub code_verifier: String,
+}
+
+impl OAuth2Credential {
+    /// Creates an OAuth 2.0 credential.
+    pub fn new(code: impl Into<String>, code_verifier: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            code_verifier: code_verifier.into(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -175,7 +248,7 @@ impl IdentityProvider for OAuth2Provider {
     }
 
     async fn authenticate(&self, credential: Value) -> ProviderResult<VerifiedIdentity> {
-        let credential: OAuthCredential =
+        let credential: OAuth2Credential =
             serde_json::from_value(credential).map_err(|_| ProviderError::InvalidCredentials)?;
         if credential.code.trim().is_empty()
             || credential.code.len() > 4096
@@ -198,6 +271,9 @@ impl IdentityProvider for OAuth2Provider {
             .await
             .map_err(|_| ProviderError::Unavailable)?;
         let status = response.status();
+        if status.as_u16() == 429 {
+            return Err(ProviderError::RateLimited { retry_after: None });
+        }
         if status.is_client_error() {
             return Err(ProviderError::InvalidCredentials);
         }
@@ -225,6 +301,9 @@ impl IdentityProvider for OAuth2Provider {
             .send()
             .await
             .map_err(|_| ProviderError::Unavailable)?;
+        if response.status().as_u16() == 429 {
+            return Err(ProviderError::RateLimited { retry_after: None });
+        }
         if !response.status().is_success() {
             return Err(ProviderError::InvalidCredentials);
         }
@@ -259,7 +338,7 @@ async fn identity_from_response(
         .ok_or_else(|| ProviderError::InvalidResponse("missing identity subject".into()))?;
     let union_id = union_field.and_then(|field| json_string(&body, field));
     Ok(VerifiedIdentity {
-        provider: provider.into(),
+        provider: ProviderName::parse(provider)?,
         subject,
         union_id,
         attributes: HashMap::new(),

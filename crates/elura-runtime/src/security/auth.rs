@@ -14,6 +14,7 @@ const MAX_TOKEN_BYTES: usize = 4096;
 pub struct InternalToken(Arc<str>);
 
 impl InternalToken {
+    /// Creates a validated service token.
     pub fn new(token: impl Into<String>) -> Result<Self> {
         let token = token.into();
         if !(MIN_TOKEN_BYTES..=MAX_TOKEN_BYTES).contains(&token.len()) {
@@ -24,11 +25,12 @@ impl InternalToken {
         Ok(Self(Arc::from(token)))
     }
 
-    #[doc(hidden)]
+    /// Exposes the token for attaching it to a trusted service request.
     pub fn expose(&self) -> &str {
         &self.0
     }
 
+    /// Checks a candidate token using constant-time comparison.
     pub fn authorizes(&self, candidate: &str) -> bool {
         self.0.as_bytes().ct_eq(candidate.as_bytes()).into()
     }

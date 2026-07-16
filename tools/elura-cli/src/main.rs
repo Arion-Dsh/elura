@@ -854,7 +854,7 @@ mod tests {
         assert!(
             fs::read_to_string(&path)
                 .unwrap()
-                .contains("WorldLauncher::new(app.runtime)")
+                .contains("World::new(app.runtime)")
         );
     }
 
@@ -898,7 +898,7 @@ mod tests {
         assert!(proto.contains("package game.inventory.v2;"));
         assert!(handler.contains("crate::proto::inventory::v2::ListItemsRequest"));
         assert!(handler.contains("const ID: u32 = 120"));
-        assert!(handler.contains("register(ListItems, handle)"));
+        assert!(handler.contains("world.route(ListItems, handle)"));
     }
 
     #[test]
@@ -967,9 +967,9 @@ mod tests {
         assert_eq!(code, 0, "{stderr}");
         let world = fs::read_to_string(directory.0.join("src/bin/world.rs")).unwrap();
         assert!(world.contains("struct AppConfig"));
-        assert!(world.contains("WorldLauncher::new(app.runtime)"));
+        assert!(world.contains("World::new(app.runtime)"));
         assert!(world.contains("impl Route for GetPlayerProfile"));
-        assert!(world.contains("builder.register("));
+        assert!(world.contains(".route(GetPlayerProfile"));
         assert!(world.contains("welcome_message"));
     }
 
@@ -981,7 +981,9 @@ mod tests {
         assert_eq!(code, 0, "{stderr}");
         let gateway = fs::read_to_string(directory.0.join("src/bin/gateway.rs")).unwrap();
         assert!(gateway.contains("struct AppConfig"));
-        assert!(gateway.contains("with_world_discovery"));
+        assert!(gateway.contains("Gateway::new(app.runtime)"));
+        assert!(gateway.contains(".transport(tcp)"));
+        assert!(gateway.contains(".world_discovery(discovery)"));
     }
 
     #[test]
@@ -991,8 +993,9 @@ mod tests {
         let (code, _, stderr) = execute(&["init", "monolith", "--dir", dir]);
         assert_eq!(code, 0, "{stderr}");
         let source = fs::read_to_string(directory.0.join("src/bin/monolith.rs")).unwrap();
-        assert!(source.contains("MonolithLauncher::new(app.runtime)"));
-        assert!(source.contains("configure_world"));
+        assert!(source.contains("Monolith::new(app.gateway, app.world)"));
+        assert!(source.contains(".transport(tcp)"));
+        assert!(source.contains("monolith.route("));
         assert!(source.contains("APP_INSTANCE_ID"));
         assert!(directory.0.join("config/monolith.json").exists());
     }

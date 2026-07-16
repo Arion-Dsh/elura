@@ -1,13 +1,19 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+use crate::account_version::{AccountVersionKey, AccountVersionStore, MutableAccountVersionStore};
+use crate::{Error, Result};
 use async_trait::async_trait;
-use elura_core::account_version::{
-    AccountVersionKey, AccountVersionStore, MutableAccountVersionStore,
-};
-use elura_core::{Error, Result};
 
-use super::validate_write;
+fn validate_write(key: AccountVersionKey, version: u64) -> Result<()> {
+    key.validate()?;
+    if version == 0 {
+        return Err(Error::InvalidConfig(
+            "account version must be positive".into(),
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Default)]
 pub struct MemoryAccountVersionStore {

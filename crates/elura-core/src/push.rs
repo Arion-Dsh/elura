@@ -7,6 +7,7 @@ use tokio::sync::watch;
 use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum PushTarget {
     Session(Uuid),
     User(i64),

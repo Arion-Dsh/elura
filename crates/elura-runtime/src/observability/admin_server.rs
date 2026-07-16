@@ -9,18 +9,23 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use elura_core::{Error, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use subtle::ConstantTimeEq;
 use tokio::sync::watch;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+/// Readiness state returned by an administration endpoint.
 pub struct Readiness {
+    /// Whether the component can currently serve application traffic.
     pub ready: bool,
+    /// Public operational reason when the component is unavailable.
     pub reason: Option<String>,
 }
 
 impl Readiness {
+    /// Creates a ready state.
     pub fn ready() -> Self {
         Self {
             ready: true,
@@ -28,6 +33,7 @@ impl Readiness {
         }
     }
 
+    /// Creates an unavailable state with an operational reason.
     pub fn unavailable(reason: impl Into<String>) -> Self {
         Self {
             ready: false,
@@ -37,20 +43,28 @@ impl Readiness {
 }
 
 #[async_trait]
+/// Supplies component diagnostics to the administration HTTP server.
 pub trait AdminDiagnostics: Send + Sync + 'static {
+    /// Returns the current readiness state.
     async fn readiness(&self) -> Readiness;
+    /// Renders metrics in Prometheus text exposition format.
     async fn prometheus(&self) -> String;
+    /// Returns a JSON-compatible component statistics snapshot.
     async fn stats(&self) -> Value;
+    /// Returns optional backend diagnostics.
     async fn backend(&self) -> Option<Value> {
         None
     }
+    /// Returns optional route diagnostics.
     async fn routes(&self) -> Option<Value> {
         None
     }
 }
 
 #[async_trait]
+/// Asynchronous health probe used to compose component readiness.
 pub trait ReadinessProbe: Send + Sync + 'static {
+    /// Succeeds when the dependency is ready and returns an operational error otherwise.
     async fn check(&self) -> Result<()>;
 }
 
@@ -65,15 +79,38 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+/// Configuration for the private administration HTTP server.
 pub struct AdminServerConfig {
+    /// Socket address used by the administration listener.
     pub listen: SocketAddr,
+    /// Optional bearer token; required for non-loopback listeners.
+    #[serde(skip)]
     pub token: Option<String>,
+    /// Stable component name reported by diagnostics.
     pub component: String,
+    /// Deployment-specific instance identifier.
     pub instance_id: String,
 }
 
 impl AdminServerConfig {
+    /// Creates administration-server configuration without a bearer token.
+    pub fn new(
+        listen: SocketAddr,
+        component: impl Into<String>,
+        instance_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            listen,
+            token: None,
+            component: component.into(),
+            instance_id: instance_id.into(),
+        }
+    }
+
+    /// Validates listener security and required identity fields.
     pub fn validate(&self) -> Result<()> {
         if self.listen.port() == 0
             || self.component.trim().is_empty()
@@ -96,20 +133,21 @@ impl AdminServerConfig {
         Ok(())
     }
 
+    /// Creates an unauthenticated loopback-only administration configuration.
     pub fn loopback(
         port: u16,
         component: impl Into<String>,
         instance_id: impl Into<String>,
     ) -> Self {
-        Self {
-            listen: SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), port),
-            token: None,
-            component: component.into(),
-            instance_id: instance_id.into(),
-        }
+        Self::new(
+            SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), port),
+            component,
+            instance_id,
+        )
     }
 }
 
+/// Private operational HTTP server exposing health, metrics and diagnostics.
 pub struct AdminServer {
     config: AdminServerConfig,
     diagnostics: Arc<dyn AdminDiagnostics>,
@@ -122,6 +160,7 @@ struct AdminState {
 }
 
 impl AdminServer {
+    /// Creates a validated administration server.
     pub fn new(config: AdminServerConfig, diagnostics: Arc<dyn AdminDiagnostics>) -> Result<Self> {
         config.validate()?;
         Ok(Self {
@@ -130,6 +169,7 @@ impl AdminServer {
         })
     }
 
+    /// Serves administration endpoints until shutdown is requested.
     pub async fn serve(&self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
         let state = AdminState {
             config: self.config.clone(),

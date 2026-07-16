@@ -1,18 +1,19 @@
-mod memory;
 #[cfg(feature = "redis")]
 mod redis;
 #[cfg(feature = "sql")]
 mod sql;
 
-pub use memory::MemoryAccountVersionStore;
 #[cfg(feature = "redis")]
 pub use redis::RedisAccountVersionStore;
 #[cfg(feature = "sql")]
 pub use sql::{ACCOUNT_VERSION_SCHEMA_VERSION, SqlAccountVersionStore};
 
+#[cfg(any(feature = "redis", feature = "sql"))]
 use elura_core::account_version::AccountVersionKey;
+#[cfg(any(feature = "redis", feature = "sql"))]
 use elura_core::{Error, Result};
 
+#[cfg(any(feature = "redis", feature = "sql"))]
 fn validate_write(key: AccountVersionKey, version: u64) -> Result<()> {
     key.validate()?;
     if version == 0 {

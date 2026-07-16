@@ -14,13 +14,14 @@ use redis::streams::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
-use crate::distributed::{RedisOnlineDirectory, cluster_transport_prefix};
+use crate::distributed::RedisOnlineDirectory;
 
 use super::{RedisConnection, cluster_connection, standalone_connection};
 use super::{SubscriptionCounters, SubscriptionStats, reconnect_delay};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+#[non_exhaustive]
 pub struct RedisStreamPushConfig {
     pub stream: String,
     pub group: String,
@@ -99,20 +100,18 @@ impl RedisStreamPushBus {
         let connection = directory.connection();
         let key_prefix = directory.prefix().to_owned();
         let resolver = Arc::new(OnlineDirectoryTargetResolver::new(directory));
-        Self::from_connection(connection, key_prefix, resolver, gateway_id, config)
+        Self::build(connection, key_prefix, resolver, gateway_id, config)
     }
 
-    /// Connects a standalone Redis Stream transport while using an independent
-    /// online-directory implementation for Push target resolution.
     pub async fn connect(
-        redis_url: &str,
+        url: &str,
         key_prefix: impl Into<String>,
         resolver: Arc<dyn PushTargetResolver>,
         gateway_id: impl Into<String>,
         config: RedisStreamPushConfig,
     ) -> Result<Self> {
         Self::from_connection(
-            standalone_connection(redis_url).await?,
+            standalone_connection(url).await?,
             key_prefix,
             resolver,
             gateway_id,
@@ -120,9 +119,6 @@ impl RedisStreamPushBus {
         )
     }
 
-    /// Connects a Redis Cluster Stream transport with an independent target
-    /// resolver. A transport hash tag is added automatically so all streams
-    /// participating in one blocking read remain in the same Cluster slot.
     pub async fn connect_cluster<I, S>(
         nodes: I,
         key_prefix: impl Into<String>,
@@ -134,7 +130,6 @@ impl RedisStreamPushBus {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        let key_prefix = cluster_transport_prefix(&key_prefix.into())?;
         Self::from_connection(
             cluster_connection(nodes).await?,
             key_prefix,
@@ -145,6 +140,17 @@ impl RedisStreamPushBus {
     }
 
     fn from_connection(
+        connection: RedisConnection,
+        key_prefix: impl Into<String>,
+        resolver: Arc<dyn PushTargetResolver>,
+        gateway_id: impl Into<String>,
+        config: RedisStreamPushConfig,
+    ) -> Result<Self> {
+        let key_prefix = connection.atomic_prefix(&key_prefix.into())?;
+        Self::build(connection, key_prefix, resolver, gateway_id, config)
+    }
+
+    fn build(
         connection: RedisConnection,
         key_prefix: impl Into<String>,
         resolver: Arc<dyn PushTargetResolver>,

@@ -1,18 +1,31 @@
 use super::{client, endpoint};
-use crate::identity::registry::{IdentityProvider, VerifiedIdentity};
+use crate::identity::registry::{IdentityProvider, ProviderName, VerifiedIdentity};
 use crate::{ProviderError, ProviderResult};
 use async_trait::async_trait;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct QuickSdkIdentityConfig {
     pub endpoint: String,
     pub allow_insecure_endpoint: bool,
     pub max_response_bytes: usize,
     pub timeout: Duration,
+}
+
+impl QuickSdkIdentityConfig {
+    /// Creates QuickSDK identity configuration for an explicit endpoint.
+    pub fn new(endpoint: impl Into<String>) -> Self {
+        Self {
+            endpoint: endpoint.into(),
+            allow_insecure_endpoint: false,
+            max_response_bytes: 4 * 1024,
+            timeout: Duration::from_secs(10),
+        }
+    }
 }
 pub struct QuickSdkIdentity {
     config: QuickSdkIdentityConfig,
@@ -36,13 +49,18 @@ impl QuickSdkIdentity {
         })
     }
 }
-#[derive(Deserialize)]
+/// Credential accepted by [`QuickSdkIdentity`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Credential {
-    token: String,
-    uid: String,
-    product_code: Option<String>,
-    channel_code: String,
+pub struct QuickSdkCredential {
+    /// QuickSDK session token.
+    pub token: String,
+    /// QuickSDK user identifier.
+    pub uid: String,
+    /// Optional product code configured in QuickSDK.
+    pub product_code: Option<String>,
+    /// Distribution channel code.
+    pub channel_code: String,
 }
 #[async_trait]
 impl IdentityProvider for QuickSdkIdentity {
@@ -50,7 +68,7 @@ impl IdentityProvider for QuickSdkIdentity {
         "quicksdk"
     }
     async fn authenticate(&self, raw: Value) -> ProviderResult<VerifiedIdentity> {
-        let credential: Credential =
+        let credential: QuickSdkCredential =
             serde_json::from_value(raw).map_err(|_| ProviderError::InvalidCredentials)?;
         let token = credential.token.trim();
         let uid = credential.uid.trim();
@@ -82,6 +100,9 @@ impl IdentityProvider for QuickSdkIdentity {
             .send()
             .await
             .map_err(|_| ProviderError::Unavailable)?;
+        if response.status().as_u16() == 429 {
+            return Err(ProviderError::RateLimited { retry_after: None });
+        }
         if !response.status().is_success() {
             return Err(ProviderError::Unavailable);
         }
@@ -100,7 +121,7 @@ impl IdentityProvider for QuickSdkIdentity {
             ("product_code".into(), product.into()),
         ]);
         Ok(VerifiedIdentity {
-            provider: self.name().into(),
+            provider: ProviderName::parse(self.name())?,
             subject: format!("{channel}:{uid}"),
             union_id: None,
             attributes,

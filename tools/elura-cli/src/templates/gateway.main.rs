@@ -1,6 +1,6 @@
 use std::{env, fs, sync::Arc};
 
-use elura::adapters::discovery::DnsWorldDiscoveryConfig;
+use elura::adapters::discovery::{DnsWorldDiscovery, DnsWorldDiscoveryConfig};
 use elura::prelude::*;
 use serde::Deserialize;
 
@@ -9,7 +9,11 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AppConfig {
-    runtime: GatewayLaunchConfig,
+    runtime: GatewayConfig,
+    admin: AdminServerConfig,
+    tcp: TcpConfig,
+    #[serde(default)]
+    quic: Option<QuicConfig>,
     discovery: DnsWorldDiscoveryConfig,
 }
 
@@ -18,16 +22,16 @@ impl AppConfig {
         let path = env::var("APP_GATEWAY_CONFIG").unwrap_or_else(|_| "config/gateway.json".into());
         let mut config: Self = serde_json::from_slice(&fs::read(path)?)?;
         config.runtime.ticket.key = required_env("APP_TICKET_KEY")?;
-        config.runtime.internal_token = required_env("APP_INTERNAL_TOKEN")?;
+        config.runtime.internal_token = Some(required_env("APP_INTERNAL_TOKEN")?);
         if let Some(value) = optional_env("APP_GATEWAY_ADDR") {
-            config.runtime.gateway.listen = parse_address("APP_GATEWAY_ADDR", &value)?;
+            config.tcp.listen = parse_address("APP_GATEWAY_ADDR", &value)?;
         }
         if let Some(value) = optional_env("APP_GATEWAY_ADMIN_ADDR") {
-            config.runtime.admin.listen = parse_address("APP_GATEWAY_ADMIN_ADDR", &value)?;
+            config.admin.listen = parse_address("APP_GATEWAY_ADMIN_ADDR", &value)?;
         }
-        config.runtime.admin.token = optional_env("APP_ADMIN_TOKEN");
+        config.admin.token = optional_env("APP_ADMIN_TOKEN");
         if let Some(value) = optional_env("APP_INSTANCE_ID") {
-            config.runtime.admin.instance_id = value;
+            config.admin.instance_id = value;
         }
         Ok(config)
     }
@@ -36,11 +40,13 @@ impl AppConfig {
 #[tokio::main]
 async fn main() -> elura::Result<()> {
     let app = AppConfig::load()?;
-    let discovery = Arc::new(app.discovery.build()?);
-    GatewayLauncher::new(app.runtime)?
-        .with_world_discovery(discovery)
-        .run()
-        .await
+    let discovery = Arc::new(DnsWorldDiscovery::new(app.discovery)?);
+    let tcp = TcpTransport::new(app.tcp)?;
+    let mut gateway = Gateway::new(app.runtime).transport(tcp);
+    if let Some(quic) = app.quic {
+        gateway = gateway.transport(quic);
+    }
+    gateway.world_discovery(discovery).run(app.admin).await
 }
 
 fn required_env(name: &str) -> elura::Result<String> {

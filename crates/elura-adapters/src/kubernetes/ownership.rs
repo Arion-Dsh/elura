@@ -41,6 +41,7 @@ fn scope_matches(lease: &Lease, region_id: u32, realm_id: u32) -> bool {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct OwnershipObserverConfig {
     pub namespace: String,
     pub region_id: u32,
@@ -50,6 +51,22 @@ pub struct OwnershipObserverConfig {
 }
 
 impl OwnershipObserverConfig {
+    /// Creates ownership observation configuration without an extra label selector.
+    pub fn new(
+        namespace: impl Into<String>,
+        region_id: u32,
+        realm_id: u32,
+        shard_count: u32,
+    ) -> Self {
+        Self {
+            namespace: namespace.into(),
+            region_id,
+            realm_id,
+            shard_count,
+            additional_label_selector: None,
+        }
+    }
+
     fn validate(&self) -> Result<()> {
         if self.namespace.trim().is_empty()
             || self.region_id == 0
@@ -233,6 +250,7 @@ pub fn assignments_from_leases<'a>(
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct OwnershipCoordinatorConfig {
     pub namespace: String,
     pub region_id: u32,
@@ -243,7 +261,7 @@ pub struct OwnershipCoordinatorConfig {
 }
 
 impl OwnershipCoordinatorConfig {
-    pub fn with_defaults(
+    pub fn new(
         namespace: impl Into<String>,
         region_id: u32,
         realm_id: u32,

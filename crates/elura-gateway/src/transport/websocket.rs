@@ -3,9 +3,12 @@
 use std::collections::HashSet;
 use std::io;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use axum::extract::connect_info::Connected;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, State};
@@ -13,22 +16,22 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Router, serve::IncomingStream};
-use bytes::{Bytes, BytesMut};
-use elura_core::protocol::{Frame, FrameCodec, HEADER_LEN, PROTOCOL_IDENTIFIER};
+use bytes::Bytes;
+use elura_core::protocol::{HEADER_LEN, PROTOCOL_IDENTIFIER};
 use elura_core::{Error, Result};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{Sink, Stream};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpListener;
-use tokio::sync::{Semaphore, mpsc, watch};
+use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinHandle;
-use tokio_util::codec::Encoder;
 use tracing::warn;
 
-use elura_runtime::internal::{BoxedInternalStream, ServerTlsConfig};
+use elura_runtime::security::{BoxedServiceStream, ServerTlsConfig};
 
-use super::session::next_outbound;
-use super::{SessionConnection, SessionService, TrustedProxies};
+use super::{GatewayTransportListener, TrustedProxies};
 
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct WebSocketConfig {
     pub listen: SocketAddr,
     pub path: String,
@@ -36,11 +39,6 @@ pub struct WebSocketConfig {
     pub allowed_origins: Vec<String>,
     pub allow_missing_origin: bool,
     pub trusted_proxies: TrustedProxies,
-    pub max_payload: usize,
-    pub inbound_capacity: usize,
-    pub response_capacity: usize,
-    pub push_capacity: usize,
-    pub write_timeout: Duration,
     pub tcp_keepalive: Duration,
     pub tls_handshake_timeout: Duration,
     pub max_pending_handshakes: usize,
@@ -50,17 +48,12 @@ pub struct WebSocketConfig {
 impl Default for WebSocketConfig {
     fn default() -> Self {
         Self {
-            listen: "127.0.0.1:17001".parse().expect("static address"),
+            listen: "127.0.0.1:17002".parse().expect("static address"),
             path: "/elura/game".into(),
             subprotocol: PROTOCOL_IDENTIFIER.into(),
             allowed_origins: Vec::new(),
             allow_missing_origin: false,
             trusted_proxies: TrustedProxies::default(),
-            max_payload: 1 << 20,
-            inbound_capacity: 64,
-            response_capacity: 64,
-            push_capacity: 64,
-            write_timeout: Duration::from_secs(10),
             tcp_keepalive: Duration::from_secs(30),
             tls_handshake_timeout: Duration::from_secs(5),
             max_pending_handshakes: 1024,
@@ -75,11 +68,6 @@ impl WebSocketConfig {
             return Err(Error::InvalidConfig("invalid WebSocket path".into()));
         }
         if self.subprotocol.trim().is_empty()
-            || self.max_payload == 0
-            || self.inbound_capacity == 0
-            || self.response_capacity == 0
-            || self.push_capacity == 0
-            || self.write_timeout.is_zero()
             || self.tcp_keepalive.is_zero()
             || self.tls_handshake_timeout.is_zero()
             || self.max_pending_handshakes == 0
@@ -94,16 +82,18 @@ impl WebSocketConfig {
 
 #[derive(Clone)]
 struct WebSocketState {
-    service: Arc<dyn SessionService>,
+    incoming: mpsc::Sender<Result<(SocketAddr, WebSocketIo)>>,
     config: Arc<WebSocketConfig>,
     origins: Arc<HashSet<String>>,
 }
 
-pub(crate) async fn serve_websocket(
-    config: WebSocketConfig,
-    service: Arc<dyn SessionService>,
-    mut shutdown: watch::Receiver<bool>,
-) -> Result<()> {
+#[doc(hidden)]
+pub struct WebSocketGatewayListener {
+    incoming: mpsc::Receiver<Result<(SocketAddr, WebSocketIo)>>,
+    task: JoinHandle<()>,
+}
+
+pub(crate) async fn bind(config: WebSocketConfig) -> Result<WebSocketGatewayListener> {
     config.validate()?;
     let path = config.path.clone();
     let origins = config
@@ -111,30 +101,41 @@ pub(crate) async fn serve_websocket(
         .iter()
         .map(|origin| origin.trim_end_matches('/').to_ascii_lowercase())
         .collect();
+    let (sender, incoming) = mpsc::channel(config.max_pending_handshakes);
     let state = WebSocketState {
-        service,
+        incoming: sender.clone(),
         config: Arc::new(config.clone()),
         origins: Arc::new(origins),
     };
     let app = Router::new().route(&path, get(upgrade)).with_state(state);
     let listener = WebSocketListener::bind(&config).await?;
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<PeerAddress>(),
-    )
-    .with_graceful_shutdown(async move {
-        if *shutdown.borrow() {
-            return;
+    let task = tokio::spawn(async move {
+        let result = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<PeerAddress>(),
+        )
+        .await
+        .map_err(|error| Error::Io(io::Error::other(error)));
+        if let Err(error) = result {
+            let _ = sender.send(Err(error)).await;
         }
-        while shutdown.changed().await.is_ok() {
-            if *shutdown.borrow() {
-                break;
-            }
-        }
-    })
-    .await
-    .map_err(io::Error::other)?;
-    Ok(())
+    });
+    Ok(WebSocketGatewayListener { incoming, task })
+}
+
+#[async_trait]
+impl GatewayTransportListener for WebSocketGatewayListener {
+    type Io = WebSocketIo;
+
+    async fn accept(&mut self) -> Result<(SocketAddr, Self::Io)> {
+        self.incoming.recv().await.ok_or(Error::Unavailable)?
+    }
+}
+
+impl Drop for WebSocketGatewayListener {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 
 async fn upgrade(
@@ -171,9 +172,10 @@ async fn upgrade(
                 .trusted_proxies
                 .forwarded_address(peer.0, value)
         });
+    let max_frame_bytes = (64 << 20) + HEADER_LEN;
     upgrade
-        .max_message_size(state.config.max_payload.saturating_add(HEADER_LEN))
-        .max_frame_size(state.config.max_payload.saturating_add(HEADER_LEN))
+        .max_message_size(max_frame_bytes)
+        .max_frame_size(max_frame_bytes)
         .protocols([protocol])
         .on_upgrade(move |socket| connection(socket, client_peer, state))
 }
@@ -202,75 +204,75 @@ fn origin_allowed(state: &WebSocketState, headers: &HeaderMap) -> bool {
 }
 
 async fn connection(socket: WebSocket, peer: SocketAddr, state: WebSocketState) {
-    let (mut socket_tx, mut socket_rx) = socket.split();
-    let (inbound_tx, inbound) = mpsc::channel(state.config.inbound_capacity);
-    let (responses, mut response_rx) = mpsc::channel::<Frame>(state.config.response_capacity);
-    let (pushes, mut push_rx) = mpsc::channel::<Frame>(state.config.push_capacity);
-    let max_payload = state.config.max_payload;
-    let write_timeout = state.config.write_timeout;
+    let stream = WebSocketIo {
+        socket,
+        buffered: Bytes::new(),
+    };
+    let _ = state.incoming.send(Ok((peer, stream))).await;
+}
 
-    let reader = tokio::spawn(async move {
-        while let Some(result) = socket_rx.next().await {
-            let result = match result {
-                Ok(Message::Binary(binary)) => decode_message(binary, max_payload),
-                Ok(Message::Close(_)) => break,
-                Ok(Message::Ping(_) | Message::Pong(_)) => continue,
-                Ok(_) => Err(Error::InvalidFrame(
-                    "WebSocket game messages must be binary".into(),
-                )),
-                Err(error) => Err(Error::Io(io::Error::other(error))),
-            };
-            let failed = result.is_err();
-            if inbound_tx.send(result).await.is_err() || failed {
-                break;
+#[doc(hidden)]
+pub struct WebSocketIo {
+    socket: WebSocket,
+    buffered: Bytes,
+}
+
+impl AsyncRead for WebSocketIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        output: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        loop {
+            if !self.buffered.is_empty() {
+                let length = output.remaining().min(self.buffered.len());
+                output.put_slice(&self.buffered.split_to(length));
+                return Poll::Ready(Ok(()));
+            }
+            match ready!(Pin::new(&mut self.socket).poll_next(cx)) {
+                Some(Ok(Message::Binary(binary))) => self.buffered = binary,
+                Some(Ok(Message::Close(_))) | None => return Poll::Ready(Ok(())),
+                Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                Some(Ok(_)) => {
+                    return Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "WebSocket game messages must be binary",
+                    )));
+                }
+                Some(Err(error)) => return Poll::Ready(Err(io::Error::other(error))),
             }
         }
-    });
-    let writer = tokio::spawn(async move {
-        let mut codec = FrameCodec::new(max_payload)?;
-        while let Some(frame) = next_outbound(&mut response_rx, &mut push_rx).await {
-            let mut output = BytesMut::new();
-            codec.encode(frame, &mut output)?;
-            tokio::time::timeout(
-                write_timeout,
-                socket_tx.send(Message::Binary(output.freeze())),
-            )
-            .await
-            .map_err(|_| Error::Timeout)?
-            .map_err(|error| Error::Io(io::Error::other(error)))?;
-        }
-        Result::<()>::Ok(())
-    });
-    if let Err(error) = state
-        .service
-        .serve_session(SessionConnection {
-            peer,
-            inbound,
-            responses,
-            pushes,
-        })
-        .await
-    {
-        warn!(%peer, %error, "WebSocket session closed");
-    }
-    reader.abort();
-    let mut writer = writer;
-    if tokio::time::timeout(Duration::from_millis(250), &mut writer)
-        .await
-        .is_err()
-    {
-        writer.abort();
     }
 }
 
-fn decode_message(binary: Bytes, max_payload: usize) -> Result<Frame> {
-    // Axum owns WebSocket binary messages as `Bytes`. Pass that allocation
-    // straight through so `FrameCodec` can slice off the header in place.
-    Ok(FrameCodec::new(max_payload)?.decode_message(binary)?)
+impl AsyncWrite for WebSocketIo {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        input: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        ready!(Pin::new(&mut self.socket).poll_ready(cx)).map_err(io::Error::other)?;
+        Pin::new(&mut self.socket)
+            .start_send(Message::Binary(Bytes::copy_from_slice(input)))
+            .map_err(io::Error::other)?;
+        Poll::Ready(Ok(input.len()))
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.socket)
+            .poll_flush(cx)
+            .map_err(io::Error::other)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.socket)
+            .poll_close(cx)
+            .map_err(io::Error::other)
+    }
 }
 
 struct WebSocketListener {
-    incoming: mpsc::Receiver<(BoxedInternalStream, SocketAddr)>,
+    incoming: mpsc::Receiver<(BoxedServiceStream, SocketAddr)>,
     task: JoinHandle<()>,
     local_addr: SocketAddr,
 }
@@ -306,7 +308,7 @@ impl WebSocketListener {
                 let tls = tls.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
-                    let stream: Result<BoxedInternalStream> = match tls {
+                    let stream: Result<BoxedServiceStream> = match tls {
                         Some(tls) => tokio::time::timeout(handshake_timeout, tls.accept(stream))
                             .await
                             .map_err(|_| Error::Timeout)
@@ -337,7 +339,7 @@ impl Drop for WebSocketListener {
 }
 
 impl axum::serve::Listener for WebSocketListener {
-    type Io = BoxedInternalStream;
+    type Io = BoxedServiceStream;
     type Addr = SocketAddr;
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
@@ -387,20 +389,5 @@ mod tests {
             trusted.forwarded_address(direct, "192.0.2.4").ip(),
             direct.ip()
         );
-    }
-
-    #[test]
-    fn binary_message_decode_reuses_websocket_bytes() {
-        let frame = Frame::request(100, 7, Bytes::from_static(b"hello")).unwrap();
-        let mut codec = FrameCodec::default();
-        let mut encoded = BytesMut::new();
-        codec.encode(frame, &mut encoded).unwrap();
-        let binary = encoded.freeze();
-        let expected_payload = binary.slice(elura_core::protocol::HEADER_LEN..);
-
-        let decoded = decode_message(binary, 1024).unwrap();
-
-        assert_eq!(decoded.payload, expected_payload);
-        assert_eq!(decoded.payload.as_ptr(), expected_payload.as_ptr());
     }
 }

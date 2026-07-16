@@ -10,6 +10,7 @@ use super::{signed_version, validate_write};
 pub const ACCOUNT_VERSION_SCHEMA_VERSION: i64 = 1;
 
 #[derive(Clone)]
+#[non_exhaustive]
 pub enum SqlAccountVersionStore {
     Postgres(PgPool),
     MySql(MySqlPool),

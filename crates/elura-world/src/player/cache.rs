@@ -14,6 +14,7 @@ pub struct PlayerSnapshot<T> {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct PlayerCacheConfig {
     pub ttl: Duration,
     pub max_entries: usize,

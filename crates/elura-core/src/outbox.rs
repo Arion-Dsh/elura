@@ -1,10 +1,17 @@
+//! Provider-neutral transactional outbox contracts.
+
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
-use elura_core::{Error, Result};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use crate::{Error, Result};
+
+mod memory;
+
+pub use memory::MemoryOutbox;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutboxEvent {
@@ -116,7 +123,7 @@ pub trait OutboxStore: Send + Sync + 'static {
     async fn replay_dead_letter(&self, id: Uuid, available_at: SystemTime) -> Result<()>;
 }
 
-pub(crate) fn validate_reason(reason: &str) -> Result<()> {
+pub fn validate_failure_reason(reason: &str) -> Result<()> {
     if reason.len() > 4096 {
         Err(Error::InvalidConfig(
             "outbox failure reason exceeds limit".into(),

@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -6,6 +5,8 @@ use elura_core::{Error, Result};
 use elura_runtime::observability::ReadinessProbe;
 use serde::Serialize;
 use tokio::sync::watch;
+
+use super::{RedisConnection, standalone_connection};
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct SubscriptionStats {
@@ -60,7 +61,7 @@ pub struct RedisHealthStats {
 }
 
 pub struct RedisHealth {
-    client: redis::Client,
+    connection: RedisConnection,
     ready: AtomicBool,
     checks: AtomicU64,
     failures: AtomicU64,
@@ -68,9 +69,9 @@ pub struct RedisHealth {
 }
 
 impl RedisHealth {
-    pub fn new(client: redis::Client) -> Arc<Self> {
-        Arc::new(Self {
-            client,
+    pub async fn connect(url: &str) -> Result<Self> {
+        Ok(Self {
+            connection: standalone_connection(url).await?,
             ready: AtomicBool::new(false),
             checks: AtomicU64::new(0),
             failures: AtomicU64::new(0),
@@ -124,7 +125,7 @@ impl RedisHealth {
     async fn probe(&self, timeout: Duration) {
         self.checks.fetch_add(1, Ordering::Relaxed);
         let result = tokio::time::timeout(timeout, async {
-            let mut connection = self.client.get_connection_manager().await?;
+            let mut connection = self.connection.clone();
             redis::cmd("PING")
                 .query_async::<String>(&mut connection)
                 .await

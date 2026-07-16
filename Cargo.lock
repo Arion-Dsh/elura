@@ -833,7 +833,7 @@ dependencies = [
 
 [[package]]
 name = "elura"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "elura-adapters",
  "elura-core",
@@ -846,7 +846,7 @@ dependencies = [
 
 [[package]]
 name = "elura-adapters"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -871,14 +871,14 @@ dependencies = [
 
 [[package]]
 name = "elura-cli"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "elura-core",
 ]
 
 [[package]]
 name = "elura-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -899,7 +899,7 @@ dependencies = [
 
 [[package]]
 name = "elura-gateway"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -924,7 +924,7 @@ dependencies = [
 
 [[package]]
 name = "elura-load"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "elura-core",
@@ -936,7 +936,7 @@ dependencies = [
 
 [[package]]
 name = "elura-monolith"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -955,7 +955,7 @@ dependencies = [
 
 [[package]]
 name = "elura-perf"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "elura-adapters",
  "elura-core",
@@ -967,18 +967,20 @@ dependencies = [
 
 [[package]]
 name = "elura-providers"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "aes",
  "aes-gcm",
  "argon2",
  "async-trait",
  "base64",
+ "bytes",
  "cbc",
  "chrono",
  "elura-core",
  "hex",
  "hmac",
+ "http",
  "md-5",
  "p256",
  "quick-xml",
@@ -998,11 +1000,12 @@ dependencies = [
 
 [[package]]
 name = "elura-runtime"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
  "elura-core",
+ "futures-util",
  "rustls",
  "rustls-pemfile",
  "serde",
@@ -1017,9 +1020,10 @@ dependencies = [
 
 [[package]]
 name = "elura-world"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
+ "axum",
  "bytes",
  "criterion",
  "elura-core",

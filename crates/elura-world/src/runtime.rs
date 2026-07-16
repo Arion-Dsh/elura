@@ -14,12 +14,13 @@ use tracing::Instrument;
 use super::WorldCommand;
 use super::config::WorldConfig;
 use super::keyed::KeyedExecutor;
+use super::module::WorldModuleRegistry;
 use super::server::WorldServer;
 use super::stats::{WorldStats, WorldStatsSnapshot};
 use super::{Next, WorldContext, WorldHandler, WorldMiddleware, WorldModule};
 use super::{Route, RouteInfo};
 
-pub struct WorldBuilder {
+pub(crate) struct WorldBuilder {
     pub(crate) config: WorldConfig,
     handlers: HashMap<u32, Arc<dyn WorldHandler>>,
     route_names: HashMap<u32, String>,
@@ -31,7 +32,7 @@ pub struct WorldBuilder {
 }
 
 impl WorldBuilder {
-    pub fn new(config: WorldConfig) -> Result<Self> {
+    pub(crate) fn new(config: WorldConfig) -> Result<Self> {
         config.validate()?;
         Ok(Self {
             config,
@@ -45,7 +46,7 @@ impl WorldBuilder {
         })
     }
 
-    pub fn with_push_transport(mut self, pusher: Arc<dyn PushTransport>) -> Self {
+    pub(crate) fn with_push_transport(mut self, pusher: Arc<dyn PushTransport>) -> Self {
         self.pusher = Some(pusher);
         self
     }
@@ -53,7 +54,11 @@ impl WorldBuilder {
     /// Registers a low-level route whose handler receives and returns raw payload bytes.
     ///
     /// Applications should normally implement [`Route`] and use [`Self::register`].
-    pub fn register_raw(&mut self, route: u32, handler: impl WorldHandler) -> Result<&mut Self> {
+    pub(crate) fn register_raw(
+        &mut self,
+        route: u32,
+        handler: impl WorldHandler,
+    ) -> Result<&mut Self> {
         if route < FIRST_APPLICATION_ROUTE {
             return Err(Error::InvalidConfig(format!("route {route} is reserved")));
         }
@@ -70,12 +75,18 @@ impl WorldBuilder {
     ///
     /// Successful handler results become ELR2 response frames. Handler errors become ELR2 error
     /// frames correlated with the original request ID.
-    pub fn register<E, F, Fut>(&mut self, _route: E, handler: F) -> Result<&mut Self>
+    pub(crate) fn register<E, F, Fut>(&mut self, _route: E, handler: F) -> Result<&mut Self>
     where
         E: Route,
         F: Fn(WorldContext, E::Request) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = Result<E::Response>> + Send + 'static,
     {
+        if E::ID < FIRST_APPLICATION_ROUTE {
+            return Err(Error::InvalidConfig(format!("route {} is reserved", E::ID)));
+        }
+        if self.handlers.contains_key(&E::ID) {
+            return Err(Error::DuplicateRoute(E::ID));
+        }
         if E::NAME.trim().is_empty() {
             return Err(Error::InvalidConfig(
                 "World route name must not be empty".into(),
@@ -101,12 +112,15 @@ impl WorldBuilder {
         Ok(self)
     }
 
-    pub fn use_middleware(&mut self, middleware: Arc<dyn WorldMiddleware>) -> Result<&mut Self> {
+    pub(crate) fn use_middleware(
+        &mut self,
+        middleware: Arc<dyn WorldMiddleware>,
+    ) -> Result<&mut Self> {
         self.middleware.push(middleware);
         Ok(self)
     }
 
-    pub fn use_route_middleware<E: Route>(
+    pub(crate) fn use_route_middleware<E: Route>(
         &mut self,
         _route: E,
         middleware: Arc<dyn WorldMiddleware>,
@@ -115,14 +129,11 @@ impl WorldBuilder {
     }
 
     /// Adds middleware to a route registered through a raw route ID.
-    pub fn use_route_middleware_raw(
+    pub(crate) fn use_route_middleware_raw(
         &mut self,
         route: u32,
         middleware: Arc<dyn WorldMiddleware>,
     ) -> Result<&mut Self> {
-        if !self.handlers.contains_key(&route) {
-            return Err(Error::RouteNotFound(route));
-        }
         self.route_middleware
             .entry(route)
             .or_default()
@@ -130,7 +141,7 @@ impl WorldBuilder {
         Ok(self)
     }
 
-    pub fn install(&mut self, module: Arc<dyn WorldModule>) -> Result<&mut Self> {
+    pub(crate) fn install(&mut self, module: Arc<dyn WorldModule>) -> Result<&mut Self> {
         let name = module.name().trim();
         if name.is_empty() {
             return Err(Error::InvalidConfig("world module name is empty".into()));
@@ -144,7 +155,7 @@ impl WorldBuilder {
         let route_names = self.route_names.clone();
         let middleware_count = self.middleware.len();
         let route_middleware = self.route_middleware.clone();
-        if let Err(error) = module.register(self) {
+        if let Err(error) = module.register(&mut WorldModuleRegistry { builder: self }) {
             self.handlers = handlers;
             self.route_names = route_names;
             self.middleware.truncate(middleware_count);
@@ -156,15 +167,22 @@ impl WorldBuilder {
         Ok(self)
     }
 
-    pub fn build(self) -> Result<WorldServer> {
-        let handlers = self.handlers;
-        let mut routes = handlers.keys().copied().collect::<Vec<_>>();
+    pub(crate) fn build(self) -> Result<WorldServer> {
+        let mut routes = self.handlers.keys().copied().collect::<Vec<_>>();
         routes.sort_unstable();
         if routes.is_empty() {
             return Err(Error::InvalidConfig(
                 "world requires at least one route".into(),
             ));
         }
+        if let Some(route) = self
+            .route_middleware
+            .keys()
+            .find(|route| !self.handlers.contains_key(route))
+        {
+            return Err(Error::RouteNotFound(*route));
+        }
+        let handlers = self.handlers;
         let route_info = routes
             .iter()
             .map(|id| RouteInfo {

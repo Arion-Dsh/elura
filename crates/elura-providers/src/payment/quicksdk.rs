@@ -98,7 +98,7 @@ impl PaymentProvider for QuickSdkPayment {
         let mut values: HashMap<String, String> = url::form_urlencoded::parse(&request.body)
             .into_owned()
             .collect();
-        values.extend(url::form_urlencoded::parse(request.query.as_bytes()).into_owned());
+        values.extend(url::form_urlencoded::parse(request.query().as_bytes()).into_owned());
         let data = values
             .get("nt_data")
             .ok_or_else(|| ProviderError::InvalidResponse("missing nt_data".into()))?;

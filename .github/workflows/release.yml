@@ -15,7 +15,7 @@ jobs:
     environment: crates-io
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: dtolnay/rust-toolchain@1.97.0
       - name: Verify release
         run: make verify
       - name: Publish crates in dependency order
@@ -36,6 +36,9 @@ jobs:
           }
           retry_publish elura-core
           retry_publish elura-runtime
+          retry_publish elura-gateway
+          retry_publish elura-world
+          retry_publish elura-monolith
           retry_publish elura-adapters
           retry_publish elura-providers
           retry_publish elura

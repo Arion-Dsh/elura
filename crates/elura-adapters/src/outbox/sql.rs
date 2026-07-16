@@ -1,15 +1,16 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use elura_core::outbox::{
+    DeadLetter, OutboxDelivery, OutboxEvent, OutboxStore, validate_failure_reason,
+};
 use elura_core::{Error, Result};
 use sqlx::{MySql, MySqlPool, PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
-use super::contract::validate_reason;
-use super::{DeadLetter, OutboxDelivery, OutboxEvent, OutboxStore};
-
 pub const OUTBOX_SCHEMA_VERSION: i64 = 1;
 
+#[non_exhaustive]
 pub enum SqlOutbox {
     Postgres(PgPool),
     MySql(MySqlPool),
@@ -303,7 +304,7 @@ impl OutboxStore for SqlOutbox {
         available_at: SystemTime,
         reason: &str,
     ) -> Result<()> {
-        validate_reason(reason)?;
+        validate_failure_reason(reason)?;
         let now = now_millis()?;
         let mut event = delivery.event.clone();
         event.available_at = available_at.max(SystemTime::now());
@@ -319,7 +320,7 @@ impl OutboxStore for SqlOutbox {
     }
 
     async fn dead_letter(&self, delivery: &OutboxDelivery, reason: &str) -> Result<()> {
-        validate_reason(reason)?;
+        validate_failure_reason(reason)?;
         let now = now_millis()?;
         let affected = match self {
             Self::Postgres(pool) => sqlx::query("UPDATE elura_outbox SET dead_at=$5,last_error=$6,leased_by=NULL,lease_token=NULL,lease_until=NULL WHERE id=$1 AND leased_by=$2 AND lease_token=$3 AND lease_until>$4 AND completed_at IS NULL AND dead_at IS NULL")

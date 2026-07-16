@@ -9,7 +9,7 @@ use elura_core::ownership::Assignment;
 use elura_core::{Error, Result};
 use sha2::{Digest, Sha256};
 
-use elura_runtime::internal::{ClientTlsConfig, InternalToken};
+use elura_runtime::security::{ClientTlsConfig, InternalToken};
 
 use super::{
     TcpWorldClient, WORLD_CONNECTION_IN_FLIGHT, WorldClient, WorldRequest,

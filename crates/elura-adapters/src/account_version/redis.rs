@@ -3,30 +3,24 @@ use elura_core::account_version::{
     AccountVersionKey, AccountVersionStore, MutableAccountVersionStore,
 };
 use elura_core::{Error, Result};
-use redis::aio::ConnectionManager;
 
 use super::{signed_version, validate_write};
+use crate::redis::{RedisConnection, standalone_connection, validate_key_prefix};
 
 #[derive(Clone)]
 pub struct RedisAccountVersionStore {
-    connection: ConnectionManager,
+    connection: RedisConnection,
     prefix: String,
 }
 
 impl RedisAccountVersionStore {
     pub async fn connect(url: &str, prefix: impl Into<String>) -> Result<Self> {
-        let client = redis::Client::open(url).map_err(redis_error)?;
-        let connection = client.get_connection_manager().await.map_err(redis_error)?;
-        Self::new(connection, prefix)
+        Self::from_connection(standalone_connection(url).await?, prefix)
     }
 
-    pub fn new(connection: ConnectionManager, prefix: impl Into<String>) -> Result<Self> {
+    fn from_connection(connection: RedisConnection, prefix: impl Into<String>) -> Result<Self> {
         let prefix = prefix.into();
-        if prefix.trim().is_empty() {
-            return Err(Error::InvalidConfig(
-                "account version Redis prefix is required".into(),
-            ));
-        }
+        validate_key_prefix(&prefix)?;
         Ok(Self { connection, prefix })
     }
 

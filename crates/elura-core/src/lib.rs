@@ -5,8 +5,10 @@
 pub mod account_version;
 pub mod error;
 pub mod gateway_world;
+pub mod identity;
 pub mod online;
 pub mod otp;
+pub mod outbox;
 pub mod ownership;
 pub mod protocol;
 pub mod push;

@@ -1,4 +1,4 @@
-use std::net::{IpAddr, SocketAddr};
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,10 +16,11 @@ use serde_json::Value;
 use subtle::ConstantTimeEq;
 use tokio::sync::watch;
 
-use crate::Gateway;
+use crate::GatewayServer;
 use crate::protection::CircuitState;
 pub use elura_runtime::observability::{
-    OpenTelemetryLayer, PrometheusText, ensure_trace_id, new_trace_id, open_telemetry_layer,
+    AdminServerConfig, OpenTelemetryLayer, PrometheusText, ReadinessProbe, ensure_trace_id,
+    new_trace_id, open_telemetry_layer,
 };
 
 /// Mutations for a Gateway's admission policy.
@@ -40,12 +41,12 @@ pub trait AdmissionAdmin: Send + Sync + 'static {
 /// Gateway controls exposed by the private administration server.
 #[derive(Clone)]
 pub struct GatewayAdmin {
-    gateway: Arc<Gateway>,
+    gateway: Arc<GatewayServer>,
     admission: Option<Arc<dyn AdmissionAdmin>>,
 }
 
 impl GatewayAdmin {
-    pub fn new(gateway: Arc<Gateway>) -> Self {
+    pub fn new(gateway: Arc<GatewayServer>) -> Self {
         Self {
             gateway,
             admission: None,
@@ -89,79 +90,6 @@ pub trait AdminDiagnostics: Send + Sync + 'static {
     }
     async fn routes(&self) -> Option<Value> {
         None
-    }
-}
-
-/// A required dependency that participates in process readiness.
-#[async_trait]
-pub trait ReadinessProbe: Send + Sync + 'static {
-    async fn check(&self) -> Result<()>;
-}
-
-#[async_trait]
-impl<F, Fut> ReadinessProbe for F
-where
-    F: Send + Sync + 'static + Fn() -> Fut,
-    Fut: Send + std::future::Future<Output = Result<()>>,
-{
-    async fn check(&self) -> Result<()> {
-        self().await
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct AdminServerConfig {
-    pub listen: SocketAddr,
-    pub token: Option<String>,
-    pub component: String,
-    pub instance_id: String,
-}
-
-impl From<elura_runtime::launch::LaunchAdminConfig> for AdminServerConfig {
-    fn from(config: elura_runtime::launch::LaunchAdminConfig) -> Self {
-        Self {
-            listen: config.listen,
-            token: config.token,
-            component: config.component,
-            instance_id: config.instance_id,
-        }
-    }
-}
-
-impl AdminServerConfig {
-    pub fn validate(&self) -> Result<()> {
-        if self.listen.port() == 0
-            || self.component.trim().is_empty()
-            || self.instance_id.trim().is_empty()
-        {
-            return Err(Error::InvalidConfig(
-                "admin listen, component and instance ID are required".into(),
-            ));
-        }
-        if !self.listen.ip().is_loopback() && self.token.as_deref().is_none_or(str::is_empty) {
-            return Err(Error::InvalidConfig(
-                "admin token is required for a non-loopback listener".into(),
-            ));
-        }
-        if self.token.as_ref().is_some_and(|token| token.len() < 32) {
-            return Err(Error::InvalidConfig(
-                "admin token must contain at least 32 bytes".into(),
-            ));
-        }
-        Ok(())
-    }
-
-    pub fn loopback(
-        port: u16,
-        component: impl Into<String>,
-        instance_id: impl Into<String>,
-    ) -> Self {
-        Self {
-            listen: SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), port),
-            token: None,
-            component: component.into(),
-            instance_id: instance_id.into(),
-        }
     }
 }
 
@@ -603,7 +531,7 @@ fn no_store_json(value: &impl Serialize) -> Response {
 }
 
 #[async_trait]
-impl AdminDiagnostics for Gateway {
+impl AdminDiagnostics for GatewayServer {
     async fn readiness(&self) -> Readiness {
         self.readiness().await
     }
@@ -795,7 +723,7 @@ mod tests {
             .unwrap(),
         );
         let gateway = Arc::new(
-            Gateway::new(
+            GatewayServer::new(
                 GatewayConfig::default(),
                 tickets,
                 Arc::new(MemoryReplayStore::default()),
@@ -803,13 +731,11 @@ mod tests {
             )
             .unwrap(),
         );
+        let mut config =
+            AdminServerConfig::new("127.0.0.1:9000".parse().unwrap(), "gateway", "test");
+        config.token = Some("a-32-byte-administration-token-xx".into());
         AdminState {
-            config: AdminServerConfig {
-                listen: "127.0.0.1:9000".parse().unwrap(),
-                token: Some("a-32-byte-administration-token-xx".into()),
-                component: "gateway".into(),
-                instance_id: "test".into(),
-            },
+            config,
             diagnostics: gateway.clone(),
             gateway_admin: Some(GatewayAdmin::new(gateway).with_admission(admission)),
         }
@@ -826,12 +752,7 @@ mod tests {
 
     #[test]
     fn requires_token_on_public_listener() {
-        let config = AdminServerConfig {
-            listen: "0.0.0.0:9000".parse().unwrap(),
-            token: None,
-            component: "gateway".into(),
-            instance_id: "a".into(),
-        };
+        let config = AdminServerConfig::new("0.0.0.0:9000".parse().unwrap(), "gateway", "a");
         assert!(config.validate().is_err());
     }
 

@@ -11,17 +11,39 @@ use chrono::Local;
 use rsa::pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey};
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
 use rsa::{Pkcs1v15Sign, RsaPrivateKey, RsaPublicKey};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use sha2::{Digest, Sha256};
 
 use crate::payment::{
-    CheckoutRequest, CheckoutResult, Money, NotificationRequest, Payment, PaymentEvent,
-    PaymentProvider, PaymentStatus, QueryRequest,
+    CheckoutRequest, CheckoutResult, ClientPayload, Money, NotificationRequest, Payment,
+    PaymentEvent, PaymentLookup, PaymentProvider, PaymentStatus,
 };
 use crate::{ProviderError, ProviderResult};
 
+/// Alipay client integration used to complete checkout.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum AlipayClientMode {
+    /// Native Alipay application SDK.
+    #[default]
+    App,
+    /// Browser or mobile-web checkout.
+    Web,
+}
+
+/// Provider-specific options for an Alipay checkout.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AlipayCheckoutOptions {
+    /// Client integration used to complete checkout.
+    #[serde(default)]
+    pub client_mode: AlipayClientMode,
+}
+
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct AlipayConfig {
     pub app_id: String,
     pub private_key_pem: String,
@@ -157,20 +179,19 @@ impl PaymentProvider for AlipayPayment {
     }
 
     async fn create(&self, request: CheckoutRequest) -> ProviderResult<CheckoutResult> {
-        request.amount.validate()?;
+        request.validate()?;
         if request.amount.currency != "CNY"
             || request.merchant_order_id.trim().is_empty()
             || request.subject.trim().is_empty()
         {
-            return Err(ProviderError::Rejected(
+            return Err(ProviderError::InvalidRequest(
                 "Alipay requires order, subject and positive CNY amount".into(),
             ));
         }
-        let mode = request.client_mode.as_deref().unwrap_or("app");
-        let (method, product_code) = match mode.to_ascii_lowercase().as_str() {
-            "app" => ("alipay.trade.app.pay", "QUICK_MSECURITY_PAY"),
-            "wap" | "web" => ("alipay.trade.wap.pay", "QUICK_WAP_WAY"),
-            _ => return Err(ProviderError::Rejected("invalid Alipay client mode".into())),
+        let options = request.provider_options_or_default::<AlipayCheckoutOptions>()?;
+        let (method, product_code) = match options.client_mode {
+            AlipayClientMode::App => ("alipay.trade.app.pay", "QUICK_MSECURITY_PAY"),
+            AlipayClientMode::Web => ("alipay.trade.wap.pay", "QUICK_WAP_WAY"),
         };
         let biz_content = serde_json::json!({
             "subject": request.subject,
@@ -182,23 +203,16 @@ impl PaymentProvider for AlipayPayment {
         let payload = self.sign_parameters(self.parameters(method, biz_content))?;
         Ok(CheckoutResult {
             provider_order_id: None,
-            client_payload: payload,
+            client_payload: ClientPayload::AppParameters(payload),
             expires_at: None,
         })
     }
 
-    async fn query(&self, request: QueryRequest) -> ProviderResult<Payment> {
-        let biz_content = match (
-            request.merchant_order_id.filter(|value| !value.is_empty()),
-            request.provider_order_id.filter(|value| !value.is_empty()),
-        ) {
-            (Some(order), _) => serde_json::json!({ "out_trade_no": order }),
-            (None, Some(order)) => serde_json::json!({ "trade_no": order }),
-            _ => {
-                return Err(ProviderError::Rejected(
-                    "Alipay order id is required".into(),
-                ));
-            }
+    async fn query(&self, lookup: PaymentLookup) -> ProviderResult<Payment> {
+        let order = lookup.value()?.to_owned();
+        let biz_content = match lookup {
+            PaymentLookup::MerchantOrderId(_) => serde_json::json!({ "out_trade_no": order }),
+            PaymentLookup::ProviderOrderId(_) => serde_json::json!({ "trade_no": order }),
         };
         let body =
             self.sign_parameters(self.parameters("alipay.trade.query", biz_content.to_string()))?;
@@ -210,6 +224,9 @@ impl PaymentProvider for AlipayPayment {
             .send()
             .await
             .map_err(|_| ProviderError::Unavailable)?;
+        if response.status().as_u16() == 429 {
+            return Err(ProviderError::RateLimited { retry_after: None });
+        }
         if !response.status().is_success() {
             return Err(ProviderError::Unavailable);
         }
@@ -231,12 +248,12 @@ impl PaymentProvider for AlipayPayment {
         }
         Ok(Payment {
             merchant_order_id: result.out_trade_no,
-            provider_order_id: result.trade_no,
+            provider_order_id: Some(result.trade_no),
             status: map_status(&result.trade_status),
-            amount: Money {
+            amount: Some(Money {
                 currency: "CNY".into(),
                 minor_units: parse_amount(&result.total_amount)?,
-            },
+            }),
             payer_id: None,
             paid_at: None,
         })
@@ -250,7 +267,7 @@ impl PaymentProvider for AlipayPayment {
         let mut values: HashMap<String, String> = url::form_urlencoded::parse(&request.body)
             .into_owned()
             .collect();
-        for (key, value) in url::form_urlencoded::parse(request.query.as_bytes()) {
+        for (key, value) in url::form_urlencoded::parse(request.query().as_bytes()) {
             values.entry(key.into_owned()).or_insert(value.into_owned());
         }
         let signature = values

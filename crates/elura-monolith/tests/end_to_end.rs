@@ -8,8 +8,8 @@ use elura_core::ErrorEnvelope;
 use elura_core::account_version::{AccountVersionKey, AccountVersionStore};
 use elura_core::online::{DuplicateLoginMode, MemoryOnlineDirectory};
 use elura_core::protocol::{
-    Frame, FrameCodec, FrameKind, PROTOCOL_IDENTIFIER, ROUTE_AUTHENTICATE, ROUTE_HEARTBEAT,
-    ROUTE_SESSION_CONTROL, SessionControl, SessionControlAction,
+    FIRST_APPLICATION_ROUTE, Frame, FrameCodec, FrameKind, PROTOCOL_IDENTIFIER, ROUTE_AUTHENTICATE,
+    ROUTE_HEARTBEAT, ROUTE_SESSION_CONTROL, SessionControl, SessionControlAction,
 };
 use elura_core::session::{
     Identity, SessionControlEvent, SessionControlHandler, SessionControlKind,
@@ -19,14 +19,17 @@ use elura_core::ticket::{MemoryReplayStore, TicketService};
 use elura_gateway::transport::{
     AccountVersionSettings, AdmissionController, AdmissionDecision, AdmissionRejection,
     AdmissionRequest, AdmissionSettings, AdmissionStage, ProxyProtocolConfig, SessionEvent,
-    SessionEventKind, TrustedProxies, WebSocketConfig,
+    SessionEventKind, TcpConfig, TcpTransport, TrustedProxies, WebSocketConfig,
 };
 use elura_gateway::{
-    Gateway, GatewayConfig, RouteRateLimit, TcpWorldClient, WorldClient, WorldRequest,
+    GatewayConfig, GatewayInterceptContext, GatewayInterceptor, GatewayNext, GatewayRequest,
+    GatewayResponse, GatewayServer as Gateway, RouteRateLimit, TcpWorldClient, WorldClient,
+    WorldRequest,
 };
-use elura_monolith::{MonolithLaunchConfig, MonolithLauncher};
+use elura_monolith::Monolith;
+use elura_runtime::observability::AdminServerConfig;
 use elura_runtime::security::InternalToken;
-use elura_world::{WorldConfig, WorldServer};
+use elura_world::{World, WorldConfig};
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
@@ -42,6 +45,28 @@ fn free_address() -> SocketAddr {
     listener.local_addr().unwrap()
 }
 
+fn admin_config(component: &str) -> AdminServerConfig {
+    AdminServerConfig::new(free_address(), component, format!("{component}-test"))
+}
+
+fn tcp(address: SocketAddr) -> TcpTransport {
+    let mut config = TcpConfig::default();
+    config.listen = address;
+    TcpTransport::new(config).unwrap()
+}
+
+fn gateway_config(configure: impl FnOnce(&mut GatewayConfig)) -> GatewayConfig {
+    let mut config = GatewayConfig::default();
+    configure(&mut config);
+    config
+}
+
+fn world_config(listen: SocketAddr) -> WorldConfig {
+    let mut config = WorldConfig::default();
+    config.listen = listen;
+    config
+}
+
 struct NeverWorld;
 
 #[async_trait::async_trait]
@@ -54,18 +79,16 @@ impl WorldClient for NeverWorld {
 #[tokio::test]
 async fn monolith_routes_gateway_requests_without_world_tcp() {
     let gateway_address = free_address();
-    let admin_address = free_address();
     let key = "m".repeat(32);
-    let mut config = MonolithLaunchConfig::default();
-    config.gateway.listen = gateway_address;
-    config.gateway.shutdown_timeout = Duration::from_millis(200);
-    config.admin.listen = admin_address;
-    config.ticket.key = key.clone();
+    let mut gateway = gateway_config(|config| {
+        config.shutdown_timeout = Duration::from_millis(200);
+    });
+    gateway.ticket.key = key.clone();
     let tickets = TicketService::new(
         key,
-        config.ticket.issuer.clone(),
-        config.ticket.audience.clone(),
-        config.ticket.ttl,
+        gateway.ticket.issuer.clone(),
+        gateway.ticket.audience.clone(),
+        gateway.ticket.ttl,
     )
     .unwrap();
     let ticket = tickets
@@ -77,15 +100,16 @@ async fn monolith_routes_gateway_requests_without_world_tcp() {
             generation: 1,
         })
         .unwrap();
-    let launcher = MonolithLauncher::new(config)
-        .unwrap()
-        .configure_world(|world| {
-            world.register_raw(100, |_context, payload: Bytes| async move { Ok(payload) })?;
-            Ok(())
-        })
-        .unwrap();
+    let monolith = Monolith::new(gateway, WorldConfig::default())
+        .transport(tcp(gateway_address))
+        .route_raw(100, |_context, payload: Bytes| async move { Ok(payload) });
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let task = tokio::spawn(launcher.run_until(shutdown_rx));
+    let task = tokio::spawn(
+        monolith
+            .build()
+            .unwrap()
+            .serve(admin_config("monolith"), shutdown_rx),
+    );
     let stream = tokio::time::timeout(Duration::from_secs(1), async {
         loop {
             match TcpStream::connect(gateway_address).await {
@@ -167,6 +191,23 @@ impl WorldClient for CountingWorld {
 }
 
 #[derive(Default)]
+struct CountingInterceptor(AtomicUsize);
+
+#[async_trait::async_trait]
+impl GatewayInterceptor for CountingInterceptor {
+    async fn intercept(
+        &self,
+        _context: &GatewayInterceptContext,
+        request: &GatewayRequest,
+        next: GatewayNext<'_>,
+    ) -> elura_core::Result<GatewayResponse> {
+        assert!(request.route() >= FIRST_APPLICATION_ROUTE);
+        self.0.fetch_add(1, Ordering::Relaxed);
+        next.run().await
+    }
+}
+
+#[derive(Default)]
 struct RecordingSessionControl(Mutex<Vec<SessionControlEvent>>);
 
 #[async_trait::async_trait]
@@ -182,9 +223,10 @@ impl SessionControlTransport for RecordingSessionControl {
     async fn subscribe(
         &self,
         _handler: Arc<dyn SessionControlHandler>,
-        _shutdown: tokio::sync::watch::Receiver<bool>,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
     ) -> elura_core::Result<()> {
-        Err(elura_core::Error::Unavailable)
+        while !*shutdown.borrow() && shutdown.changed().await.is_ok() {}
+        Ok(())
     }
 }
 
@@ -239,20 +281,20 @@ async fn gateway_drain_allows_an_inflight_request_to_finish() {
     let world = Arc::new(BlockingWorld::default());
     let gateway = Arc::new(
         Gateway::new(
-            GatewayConfig {
-                listen: gateway_address,
-                shutdown_timeout: Duration::from_millis(500),
-                ..GatewayConfig::default()
-            },
+            gateway_config(|config| {
+                config.shutdown_timeout = Duration::from_millis(500);
+            }),
             tickets,
             Arc::new(MemoryReplayStore::default()),
             world.clone(),
         )
+        .unwrap()
+        .with_transport(tcp(gateway_address))
         .unwrap(),
     );
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let gateway_task = tokio::spawn(gateway.clone().serve_tcp(shutdown_rx));
+    let gateway_task = tokio::spawn(gateway.clone().serve_embedded(shutdown_rx));
     tokio::time::sleep(Duration::from_millis(20)).await;
     let mut protocol = Framed::new(
         TcpStream::connect(gateway_address).await.unwrap(),
@@ -323,20 +365,20 @@ async fn gateway_drain_deadline_forces_remaining_sessions() {
         .unwrap();
     let gateway = Arc::new(
         Gateway::new(
-            GatewayConfig {
-                listen: gateway_address,
-                shutdown_timeout: Duration::from_millis(40),
-                ..GatewayConfig::default()
-            },
+            gateway_config(|config| {
+                config.shutdown_timeout = Duration::from_millis(40);
+            }),
             tickets,
             Arc::new(MemoryReplayStore::default()),
             Arc::new(NeverWorld),
         )
+        .unwrap()
+        .with_transport(tcp(gateway_address))
         .unwrap(),
     );
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let gateway_task = tokio::spawn(gateway.clone().serve_tcp(shutdown_rx));
+    let gateway_task = tokio::spawn(gateway.clone().serve_embedded(shutdown_rx));
     tokio::time::sleep(Duration::from_millis(20)).await;
     let mut protocol = Framed::new(
         TcpStream::connect(gateway_address).await.unwrap(),
@@ -408,14 +450,13 @@ async fn stale_ticket_is_rejected_by_authoritative_account_version() {
         })
         .unwrap();
     let gateway = Gateway::new(
-        GatewayConfig {
-            listen: gateway_address,
-            ..GatewayConfig::default()
-        },
+        GatewayConfig::default(),
         tickets,
         Arc::new(MemoryReplayStore::default()),
         Arc::new(NeverWorld),
     )
+    .unwrap()
+    .with_transport(tcp(gateway_address))
     .unwrap()
     .with_account_version_store(
         Arc::new(AtomicVersionStore::new(2)),
@@ -424,7 +465,7 @@ async fn stale_ticket_is_rejected_by_authoritative_account_version() {
     .unwrap();
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let gateway_task = tokio::spawn(gateway.serve(shutdown_rx));
+    let gateway_task = tokio::spawn(Arc::new(gateway).serve_embedded(shutdown_rx));
     tokio::time::sleep(Duration::from_millis(20)).await;
     let mut protocol = Framed::new(
         TcpStream::connect(gateway_address).await.unwrap(),
@@ -475,14 +516,13 @@ async fn periodic_account_version_check_disconnects_a_stale_session() {
     let ticket = tickets.issue(identity).unwrap();
     let versions = Arc::new(AtomicVersionStore::new(1));
     let gateway = Gateway::new(
-        GatewayConfig {
-            listen: gateway_address,
-            ..GatewayConfig::default()
-        },
+        GatewayConfig::default(),
         tickets,
         Arc::new(MemoryReplayStore::default()),
         Arc::new(NeverWorld),
     )
+    .unwrap()
+    .with_transport(tcp(gateway_address))
     .unwrap()
     .with_account_version_store(
         versions.clone(),
@@ -494,7 +534,7 @@ async fn periodic_account_version_check_disconnects_a_stale_session() {
     .unwrap();
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let gateway_task = tokio::spawn(gateway.serve(shutdown_rx));
+    let gateway_task = tokio::spawn(Arc::new(gateway).serve_embedded(shutdown_rx));
     tokio::time::sleep(Duration::from_millis(20)).await;
     let mut protocol = Framed::new(
         TcpStream::connect(gateway_address).await.unwrap(),
@@ -565,19 +605,18 @@ async fn local_account_version_revocation_targets_only_older_sessions() {
         .unwrap();
     let gateway = Arc::new(
         Gateway::new(
-            GatewayConfig {
-                listen: gateway_address,
-                ..GatewayConfig::default()
-            },
+            GatewayConfig::default(),
             tickets,
             Arc::new(MemoryReplayStore::default()),
             Arc::new(NeverWorld),
         )
+        .unwrap()
+        .with_transport(tcp(gateway_address))
         .unwrap(),
     );
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let gateway_task = tokio::spawn(gateway.clone().serve_tcp(shutdown_rx));
+    let gateway_task = tokio::spawn(gateway.clone().serve_embedded(shutdown_rx));
     tokio::time::sleep(Duration::from_millis(20)).await;
     let mut protocol = Framed::new(
         TcpStream::connect(gateway_address).await.unwrap(),
@@ -699,14 +738,13 @@ async fn session_observers_receive_isolated_ordered_lifecycle_events() {
     let observed = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
     let sink = observed.clone();
     let gateway = Gateway::new(
-        GatewayConfig {
-            listen: gateway_address,
-            ..GatewayConfig::default()
-        },
+        GatewayConfig::default(),
         tickets,
         Arc::new(MemoryReplayStore::default()),
         Arc::new(NeverWorld),
     )
+    .unwrap()
+    .with_transport(tcp(gateway_address))
     .unwrap()
     .with_session_observer(Arc::new(|_event: SessionEvent| {
         Err(elura_core::Error::Internal("observer unavailable".into()))
@@ -717,7 +755,7 @@ async fn session_observers_receive_isolated_ordered_lifecycle_events() {
     }));
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let gateway_task = tokio::spawn(gateway.serve(shutdown_rx));
+    let gateway_task = tokio::spawn(Arc::new(gateway).serve_embedded(shutdown_rx));
     tokio::time::sleep(Duration::from_millis(20)).await;
     let stream = TcpStream::connect(gateway_address).await.unwrap();
     let mut protocol = Framed::new(stream, FrameCodec::default());
@@ -792,22 +830,19 @@ async fn proxy_protocol_source_reaches_gateway_admission() {
         ProxyProtocolConfig::new(TrustedProxies::parse(["127.0.0.0/8", "::1/128"]).unwrap())
             .unwrap();
     let gateway = Gateway::new(
-        GatewayConfig {
-            listen: gateway_address,
-            ..GatewayConfig::default()
-        },
+        GatewayConfig::default(),
         tickets,
         Arc::new(MemoryReplayStore::default()),
         Arc::new(NeverWorld),
     )
     .unwrap()
-    .with_admission(admission.clone(), AdmissionSettings::default())
+    .with_transport(tcp(gateway_address).with_proxy_protocol(proxy).unwrap())
     .unwrap()
-    .with_proxy_protocol(proxy)
+    .with_admission(admission.clone(), AdmissionSettings::default())
     .unwrap();
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let gateway_task = tokio::spawn(gateway.serve(shutdown_rx));
+    let gateway_task = tokio::spawn(Arc::new(gateway).serve_embedded(shutdown_rx));
     tokio::time::sleep(Duration::from_millis(20)).await;
     let mut stream = TcpStream::connect(gateway_address).await.unwrap();
     stream
@@ -863,20 +898,19 @@ async fn admission_checks_connection_and_authenticated_identity() {
         .unwrap();
     let admission = Arc::new(RecordingAdmission::default());
     let gateway = Gateway::new(
-        GatewayConfig {
-            listen: gateway_address,
-            ..GatewayConfig::default()
-        },
+        GatewayConfig::default(),
         tickets,
         Arc::new(MemoryReplayStore::default()),
         Arc::new(NeverWorld),
     )
     .unwrap()
+    .with_transport(tcp(gateway_address))
+    .unwrap()
     .with_admission(admission.clone(), AdmissionSettings::default())
     .unwrap();
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let gateway_task = tokio::spawn(gateway.serve(shutdown_rx));
+    let gateway_task = tokio::spawn(Arc::new(gateway).serve_embedded(shutdown_rx));
     tokio::time::sleep(Duration::from_millis(20)).await;
     let stream = TcpStream::connect(gateway_address).await.unwrap();
     let mut protocol = Framed::new(stream, FrameCodec::default());
@@ -914,15 +948,8 @@ async fn websocket_uses_the_gateway_session_engine() {
     let websocket_address = free_address();
     let internal_token = InternalToken::new("fedcba9876543210fedcba9876543210").unwrap();
 
-    let mut world = WorldServer::builder(WorldConfig {
-        listen: world_address,
-        ..WorldConfig::default()
-    })
-    .unwrap();
-    world
-        .register_raw(100, |_context, payload| async move { Ok(payload) })
-        .unwrap();
-    let world = world
+    let world = World::new(world_config(world_address))
+        .route_raw(100, |_context, payload| async move { Ok(payload) })
         .build()
         .unwrap()
         .with_internal_token(internal_token.clone());
@@ -944,35 +971,29 @@ async fn websocket_uses_the_gateway_session_engine() {
         generation: 1,
     };
     let ticket = tickets.issue(identity.clone()).unwrap();
+    let mut websocket_config = WebSocketConfig::default();
+    websocket_config.listen = websocket_address;
+    websocket_config.allowed_origins = vec!["https://game.example.com".into()];
     let gateway = Arc::new(
         Gateway::new(
-            GatewayConfig {
-                listen: gateway_address,
-                ..GatewayConfig::default()
-            },
+            GatewayConfig::default(),
             tickets,
             Arc::new(MemoryReplayStore::default()),
             Arc::new(
                 TcpWorldClient::new(world_address, 1 << 20).with_internal_token(internal_token),
             ),
         )
+        .unwrap()
+        .with_transport(tcp(gateway_address))
+        .unwrap()
+        .with_transport(websocket_config)
         .unwrap(),
     );
-    let websocket_config = WebSocketConfig {
-        listen: websocket_address,
-        allowed_origins: vec!["https://game.example.com".into()],
-        ..WebSocketConfig::default()
-    };
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let world_task = tokio::spawn(world.serve(shutdown_rx.clone()));
+    let world_task = tokio::spawn(world.serve(admin_config("world"), shutdown_rx.clone()));
     tokio::time::sleep(Duration::from_millis(20)).await;
-    let tcp_task = tokio::spawn(gateway.clone().serve_tcp(shutdown_rx.clone()));
-    let websocket_task = tokio::spawn(
-        gateway
-            .clone()
-            .serve_websocket(websocket_config, shutdown_rx.clone()),
-    );
+    let gateway_task = tokio::spawn(gateway.clone().serve_embedded(shutdown_rx.clone()));
     tokio::time::sleep(Duration::from_millis(20)).await;
 
     let uri = format!("ws://{websocket_address}/elura/game");
@@ -1034,8 +1055,7 @@ async fn websocket_uses_the_gateway_session_engine() {
     socket.close(None).await.unwrap();
     drop(socket);
     world_task.await.unwrap().unwrap();
-    tcp_task.await.unwrap().unwrap();
-    websocket_task.await.unwrap().unwrap();
+    gateway_task.await.unwrap().unwrap();
 }
 
 fn encode_websocket(frame: Frame) -> Bytes {
@@ -1061,22 +1081,14 @@ async fn ticket_gateway_world_round_trip() {
     let world_address = free_address();
     let gateway_address = free_address();
 
-    let mut world = WorldServer::builder(WorldConfig {
-        listen: world_address,
-        ..WorldConfig::default()
-    })
-    .unwrap();
-    world
-        .register_raw(100, |_context, payload| async move { Ok(payload) })
-        .unwrap();
-    world
-        .register_raw(101, |_context, _payload| async move {
+    let world = World::new(world_config(world_address))
+        .route_raw(100, |_context, payload| async move { Ok(payload) })
+        .route_raw(101, |_context, _payload| async move {
             Err(elura_core::Error::business(
                 "NOT_ENOUGH_GOLD",
                 "not enough gold",
             ))
-        })
-        .unwrap();
+        });
     let internal_token = InternalToken::new("0123456789abcdef0123456789abcdef").unwrap();
     let world = world
         .build()
@@ -1101,10 +1113,7 @@ async fn ticket_gateway_world_round_trip() {
     };
     let ticket = tickets.issue(identity.clone()).unwrap();
     let second_ticket = tickets.issue(identity.clone()).unwrap();
-    let config = GatewayConfig {
-        listen: gateway_address,
-        ..GatewayConfig::default()
-    };
+    let config = GatewayConfig::default();
     let gateway = Gateway::new(
         config.clone(),
         tickets,
@@ -1114,6 +1123,8 @@ async fn ticket_gateway_world_round_trip() {
                 .with_internal_token(internal_token),
         ),
     )
+    .unwrap()
+    .with_transport(tcp(gateway_address))
     .unwrap()
     .with_online_directory(
         "gateway-test",
@@ -1127,9 +1138,9 @@ async fn ticket_gateway_world_round_trip() {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let world_shutdown = shutdown_rx.clone();
     let gateway_shutdown = shutdown_rx.clone();
-    let world_task = tokio::spawn(world.serve(world_shutdown));
+    let world_task = tokio::spawn(world.serve(admin_config("world"), world_shutdown));
     tokio::time::sleep(Duration::from_millis(20)).await;
-    let gateway_task = tokio::spawn(gateway.serve(gateway_shutdown));
+    let gateway_task = tokio::spawn(Arc::new(gateway).serve_embedded(gateway_shutdown));
     tokio::time::sleep(Duration::from_millis(20)).await;
 
     let stream = TcpStream::connect(gateway_address).await.unwrap();
@@ -1234,20 +1245,20 @@ async fn unauthenticated_connection_is_closed_at_authentication_deadline() {
     );
     let gateway = Arc::new(
         Gateway::new(
-            GatewayConfig {
-                listen: address,
-                authentication_timeout: Duration::from_millis(30),
-                heartbeat_interval: Duration::from_secs(1),
-                ..GatewayConfig::default()
-            },
+            gateway_config(|config| {
+                config.authentication_timeout = Duration::from_millis(30);
+                config.heartbeat_interval = Duration::from_secs(1);
+            }),
             tickets,
             Arc::new(MemoryReplayStore::default()),
             Arc::new(NeverWorld),
         )
+        .unwrap()
+        .with_transport(tcp(address))
         .unwrap(),
     );
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let task = tokio::spawn(gateway.serve_tcp(shutdown_rx));
+    let task = tokio::spawn(gateway.serve_embedded(shutdown_rx));
     tokio::time::sleep(Duration::from_millis(20)).await;
     let mut client = Framed::new(
         TcpStream::connect(address).await.unwrap(),
@@ -1283,21 +1294,23 @@ async fn duplicate_request_returns_cached_response_without_reexecution() {
         })
         .unwrap();
     let world = Arc::new(CountingWorld::default());
+    let interceptor = Arc::new(CountingInterceptor::default());
     let gateway = Arc::new(
         Gateway::new(
-            GatewayConfig {
-                listen: address,
-                heartbeat_interval: Duration::from_secs(1),
-                ..GatewayConfig::default()
-            },
+            gateway_config(|config| {
+                config.heartbeat_interval = Duration::from_secs(1);
+            }),
             tickets,
             Arc::new(MemoryReplayStore::default()),
             world.clone(),
         )
+        .unwrap()
+        .with_interceptor(interceptor.clone())
+        .with_transport(tcp(address))
         .unwrap(),
     );
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let task = tokio::spawn(gateway.serve_tcp(shutdown_rx));
+    let task = tokio::spawn(gateway.serve_embedded(shutdown_rx));
     tokio::time::sleep(Duration::from_millis(20)).await;
     let mut client = Framed::new(
         TcpStream::connect(address).await.unwrap(),
@@ -1318,6 +1331,7 @@ async fn duplicate_request_returns_cached_response_without_reexecution() {
         client.next().await.unwrap().unwrap().kind,
         FrameKind::Response
     );
+    assert_eq!(interceptor.0.load(Ordering::Relaxed), 0);
     client
         .send(Frame::request(100, 2, Bytes::from_static(b"first")).unwrap())
         .await
@@ -1335,6 +1349,7 @@ async fn duplicate_request_returns_cached_response_without_reexecution() {
         Bytes::from_static(b"first")
     );
     assert_eq!(world.0.load(Ordering::Relaxed), 1);
+    assert_eq!(interceptor.0.load(Ordering::Relaxed), 1);
     drop(client);
     shutdown_tx.send(true).unwrap();
     task.await.unwrap().unwrap();
@@ -1363,9 +1378,8 @@ async fn route_rate_limit_disconnects_after_repeated_violations() {
         .unwrap();
     let gateway = Arc::new(
         Gateway::new(
-            GatewayConfig {
-                listen: address,
-                route_rate_limits: std::collections::HashMap::from([
+            gateway_config(|config| {
+                config.route_rate_limits = std::collections::HashMap::from([
                     (
                         ROUTE_AUTHENTICATE,
                         RouteRateLimit {
@@ -1380,19 +1394,20 @@ async fn route_rate_limit_disconnects_after_repeated_violations() {
                             burst: 1,
                         },
                     ),
-                ]),
-                max_rate_limit_violations: 2,
-                heartbeat_interval: Duration::from_secs(1),
-                ..GatewayConfig::default()
-            },
+                ]);
+                config.max_rate_limit_violations = 2;
+                config.heartbeat_interval = Duration::from_secs(1);
+            }),
             tickets,
             Arc::new(MemoryReplayStore::default()),
             Arc::new(CountingWorld::default()),
         )
+        .unwrap()
+        .with_transport(tcp(address))
         .unwrap(),
     );
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let task = tokio::spawn(gateway.serve_tcp(shutdown_rx));
+    let task = tokio::spawn(gateway.serve_embedded(shutdown_rx));
     tokio::time::sleep(Duration::from_millis(20)).await;
     let mut client = Framed::new(
         TcpStream::connect(address).await.unwrap(),
@@ -1460,19 +1475,19 @@ async fn reserved_client_routes_disconnect_after_repeated_protocol_violations() 
         .unwrap();
     let gateway = Arc::new(
         Gateway::new(
-            GatewayConfig {
-                listen: address,
-                max_protocol_violations: 2,
-                ..GatewayConfig::default()
-            },
+            gateway_config(|config| {
+                config.max_protocol_violations = 2;
+            }),
             tickets,
             Arc::new(MemoryReplayStore::default()),
             Arc::new(CountingWorld::default()),
         )
+        .unwrap()
+        .with_transport(tcp(address))
         .unwrap(),
     );
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let task = tokio::spawn(gateway.serve_tcp(shutdown_rx));
+    let task = tokio::spawn(gateway.serve_embedded(shutdown_rx));
     tokio::time::sleep(Duration::from_millis(20)).await;
     let mut client = Framed::new(
         TcpStream::connect(address).await.unwrap(),
@@ -1534,19 +1549,19 @@ async fn server_heartbeat_accepts_response_and_keeps_session_usable() {
         .unwrap();
     let gateway = Arc::new(
         Gateway::new(
-            GatewayConfig {
-                listen: address,
-                heartbeat_interval: Duration::from_millis(30),
-                ..GatewayConfig::default()
-            },
+            gateway_config(|config| {
+                config.heartbeat_interval = Duration::from_millis(30);
+            }),
             tickets,
             Arc::new(MemoryReplayStore::default()),
             Arc::new(CountingWorld::default()),
         )
+        .unwrap()
+        .with_transport(tcp(address))
         .unwrap(),
     );
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let task = tokio::spawn(gateway.serve_tcp(shutdown_rx));
+    let task = tokio::spawn(gateway.serve_embedded(shutdown_rx));
     tokio::time::sleep(Duration::from_millis(20)).await;
     let mut client = Framed::new(
         TcpStream::connect(address).await.unwrap(),
@@ -1613,20 +1628,20 @@ async fn gateway_publishes_login_and_force_logout_session_control_events() {
     let control = Arc::new(RecordingSessionControl::default());
     let gateway = Arc::new(
         Gateway::new(
-            GatewayConfig {
-                listen: address,
-                heartbeat_interval: Duration::from_secs(1),
-                ..GatewayConfig::default()
-            },
+            gateway_config(|config| {
+                config.heartbeat_interval = Duration::from_secs(1);
+            }),
             tickets,
             Arc::new(MemoryReplayStore::default()),
             Arc::new(CountingWorld::default()),
         )
         .unwrap()
+        .with_transport(tcp(address))
+        .unwrap()
         .with_session_control_transport(control.clone()),
     );
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let task = tokio::spawn(gateway.clone().serve_tcp(shutdown_rx));
+    let task = tokio::spawn(gateway.clone().serve_embedded(shutdown_rx));
     tokio::time::sleep(Duration::from_millis(20)).await;
     let mut client = Framed::new(
         TcpStream::connect(address).await.unwrap(),

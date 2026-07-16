@@ -10,6 +10,7 @@ use tokio::sync::watch;
 /// Configuration owned by the DNS discovery adapter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct DnsWorldDiscoveryConfig {
     pub endpoint: String,
     pub region_id: u32,
@@ -20,14 +21,15 @@ pub struct DnsWorldDiscoveryConfig {
 }
 
 impl DnsWorldDiscoveryConfig {
-    pub fn build(self) -> Result<DnsWorldDiscovery> {
-        DnsWorldDiscovery::new(
-            self.endpoint,
-            self.region_id,
-            self.realm_id,
-            self.route,
-            self.refresh_interval,
-        )
+    /// Creates DNS discovery configuration for a World route scope.
+    pub fn new(endpoint: impl Into<String>, region_id: u32, realm_id: u32) -> Self {
+        Self {
+            endpoint: endpoint.into(),
+            region_id,
+            realm_id,
+            route: 0,
+            refresh_interval: Duration::from_secs(5),
+        }
     }
 }
 
@@ -40,27 +42,28 @@ pub struct DnsWorldDiscovery {
 }
 
 impl DnsWorldDiscovery {
-    pub fn new(
-        endpoint: String,
-        region_id: u32,
-        realm_id: u32,
-        route: u32,
-        refresh_interval: Duration,
-    ) -> Result<Self> {
-        let valid_endpoint = endpoint.rsplit_once(':').is_some_and(|(host, port)| {
-            !host.trim().is_empty() && port.parse::<u16>().is_ok_and(|port| port > 0)
-        });
-        if !valid_endpoint || region_id == 0 || realm_id == 0 || refresh_interval.is_zero() {
+    pub fn new(config: DnsWorldDiscoveryConfig) -> Result<Self> {
+        let valid_endpoint = config
+            .endpoint
+            .rsplit_once(':')
+            .is_some_and(|(host, port)| {
+                !host.trim().is_empty() && port.parse::<u16>().is_ok_and(|port| port > 0)
+            });
+        if !valid_endpoint
+            || config.region_id == 0
+            || config.realm_id == 0
+            || config.refresh_interval.is_zero()
+        {
             return Err(Error::InvalidConfig(
                 "DNS discovery requires endpoint, region, realm and refresh interval".into(),
             ));
         }
         Ok(Self {
-            endpoint,
-            region_id,
-            realm_id,
-            route,
-            refresh_interval,
+            endpoint: config.endpoint,
+            region_id: config.region_id,
+            realm_id: config.realm_id,
+            route: config.route,
+            refresh_interval: config.refresh_interval,
         })
     }
 
@@ -122,7 +125,7 @@ mod tests {
             route: 0,
             refresh_interval: Duration::from_secs(5),
         };
-        config.build().unwrap();
+        DnsWorldDiscovery::new(config).unwrap();
 
         let invalid = DnsWorldDiscoveryConfig {
             endpoint: "world-without-port".into(),
@@ -131,6 +134,6 @@ mod tests {
             route: 0,
             refresh_interval: Duration::from_secs(5),
         };
-        assert!(invalid.build().is_err());
+        assert!(DnsWorldDiscovery::new(invalid).is_err());
     }
 }

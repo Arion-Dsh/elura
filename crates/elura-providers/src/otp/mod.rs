@@ -1,19 +1,16 @@
 //! One-time-password issuance and verification.
 
-mod memory;
-
-pub use memory::MemoryOtpStore;
-
 use crate::identity::{OtpSender, OtpVerifier};
 use crate::{ProviderError, ProviderResult};
 use async_trait::async_trait;
-use elura_core::otp::{OtpCreateResult, OtpRecord, OtpStore, OtpVerifyResult};
+use elura_core::otp::{MemoryOtpStore, OtpCreateResult, OtpRecord, OtpStore, OtpVerifyResult};
 use hmac::{Hmac, Mac};
 use rand::Rng;
 use sha2::Sha256;
 use std::{sync::Arc, time::Duration};
 use subtle::ConstantTimeEq;
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct OtpConfig {
     pub digits: usize,
     pub ttl: Duration,
@@ -70,12 +67,7 @@ impl OtpService {
         secret: Vec<u8>,
         sender: Arc<dyn OtpSender>,
     ) -> ProviderResult<Self> {
-        Self::new(
-            config,
-            secret,
-            sender,
-            Arc::new(memory::MemoryOtpStore::default()),
-        )
+        Self::new(config, secret, sender, Arc::new(MemoryOtpStore::default()))
     }
 
     fn digest(&self, phone: &str, purpose: &str, code: &str) -> ProviderResult<Vec<u8>> {
@@ -122,6 +114,11 @@ impl OtpService {
             OtpCreateResult::Stored => {}
             OtpCreateResult::Cooldown => {
                 return Err(ProviderError::Rejected("OTP resend limited".into()));
+            }
+            _ => {
+                return Err(ProviderError::InvalidResponse(
+                    "unsupported OTP store create result".into(),
+                ));
             }
         }
         if let Err(e) = self.sender.send_code(phone, &code, purpose).await {

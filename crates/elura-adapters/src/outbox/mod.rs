@@ -1,17 +1,10 @@
-mod contract;
-mod dispatcher;
-mod memory;
 #[cfg(feature = "redis")]
 mod redis;
 #[cfg(feature = "sql")]
 mod sql;
 
-pub use contract::{DeadLetter, OutboxDelivery, OutboxEvent, OutboxStore};
-pub use dispatcher::{
-    Dispatcher, DispatcherConfig, DispatcherStats, EventHandler, IdempotencyStore,
-    MemoryIdempotencyStore,
-};
-pub use memory::MemoryOutbox;
+#[cfg(feature = "redis")]
+pub use crate::redis::idempotency::RedisIdempotencyStore;
 #[cfg(feature = "redis")]
 pub use redis::RedisOutbox;
 #[cfg(feature = "sql")]

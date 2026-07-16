@@ -11,7 +11,7 @@ use serde_json::Value;
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
-use super::registry::{IdentityProvider, VerifiedIdentity};
+use super::registry::{IdentityProvider, ProviderName, VerifiedIdentity};
 use crate::{ProviderError, ProviderResult};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -114,10 +114,21 @@ impl GuestProvider {
     }
 }
 
-#[derive(Deserialize)]
+/// Signed guest token credential accepted by [`GuestProvider`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct GuestCredential {
-    token: String,
+pub struct GuestCredential {
+    /// Guest token returned by [`GuestProvider::issue`].
+    pub token: String,
+}
+
+impl GuestCredential {
+    /// Creates a guest credential.
+    pub fn new(token: impl Into<String>) -> Self {
+        Self {
+            token: token.into(),
+        }
+    }
 }
 
 #[async_trait]
@@ -129,7 +140,7 @@ impl IdentityProvider for GuestProvider {
         let credential: GuestCredential =
             serde_json::from_value(credential).map_err(|_| ProviderError::InvalidCredentials)?;
         Ok(VerifiedIdentity {
-            provider: self.name().into(),
+            provider: ProviderName::parse(self.name())?,
             subject: self.verify(credential.token.trim())?,
             union_id: None,
             attributes: HashMap::new(),

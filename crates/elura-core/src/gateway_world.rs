@@ -174,6 +174,7 @@ impl From<GatewayWorldIdentity> for Identity {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+#[non_exhaustive]
 pub struct GatewayWorldRoutingConfig {
     pub pool_size: usize,
     pub max_in_flight_per_connection: usize,

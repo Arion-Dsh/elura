@@ -19,6 +19,7 @@ pub struct ReplayHeader {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ReplayRecord<C> {
     Command {
         tick: u64,

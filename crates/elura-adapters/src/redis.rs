@@ -1,35 +1,78 @@
-use std::time::UNIX_EPOCH;
-
-use async_trait::async_trait;
-use elura_core::ticket::ReplayStore;
 use elura_core::{Error, Result};
 use redis::aio::ConnectionManager;
 
-pub use crate::distributed::RedisOnlineDirectory;
-
 mod health;
-mod idempotency;
-mod otp;
-mod push_stream;
-mod session;
+pub(crate) mod idempotency;
+pub(crate) mod otp;
+pub(crate) mod push_stream;
+pub(crate) mod session;
 
 pub use health::{RedisHealth, RedisHealthStats, SubscriptionStats};
 pub(crate) use health::{SubscriptionCounters, reconnect_delay};
-pub use idempotency::RedisIdempotencyStore;
-pub use otp::RedisOtpStore;
-pub use push_stream::{RedisStreamPushBus, RedisStreamPushConfig};
-pub use session::{RedisSessionControlBus, RedisSessionControlConfig};
 
 #[derive(Clone)]
-pub struct RedisReplayStore {
-    connection: RedisConnection,
-    prefix: String,
+enum RedisConnectionInner {
+    Standalone(ConnectionManager),
+    Cluster(redis::cluster_async::ClusterConnection),
 }
 
 #[derive(Clone)]
-pub(crate) enum RedisConnection {
-    Standalone(ConnectionManager),
-    Cluster(redis::cluster_async::ClusterConnection),
+pub(crate) struct RedisConnection {
+    inner: RedisConnectionInner,
+    standalone_client: Option<redis::Client>,
+}
+
+impl RedisConnection {
+    pub(crate) fn is_cluster(&self) -> bool {
+        matches!(self.inner, RedisConnectionInner::Cluster(_))
+    }
+
+    pub(crate) fn pubsub_client(&self) -> Result<redis::Client> {
+        self.standalone_client.clone().ok_or_else(|| {
+            Error::InvalidConfig("this Redis adapter requires standalone Pub/Sub".into())
+        })
+    }
+
+    pub(crate) fn atomic_prefix(&self, prefix: &str) -> Result<String> {
+        validate_key_prefix(prefix)?;
+        if self.is_cluster() {
+            Ok(format!("{prefix}:{{transport}}"))
+        } else {
+            Ok(prefix.to_owned())
+        }
+    }
+}
+
+pub(crate) async fn standalone_connection(url: &str) -> Result<RedisConnection> {
+    if url.trim().is_empty() {
+        return Err(Error::InvalidConfig("Redis URL is required".into()));
+    }
+    let client = redis::Client::open(url).map_err(connection_error)?;
+    let connection = client
+        .get_connection_manager()
+        .await
+        .map_err(connection_error)?;
+    Ok(RedisConnection {
+        inner: RedisConnectionInner::Standalone(connection),
+        standalone_client: Some(client),
+    })
+}
+
+pub(crate) async fn cluster_connection<I, S>(nodes: I) -> Result<RedisConnection>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let nodes = normalize_cluster_nodes(nodes)?;
+    let client = redis::cluster::ClusterClient::new(nodes).map_err(connection_error)?;
+    let connection = client
+        .get_async_connection()
+        .await
+        .map_err(connection_error)?;
+    Ok(RedisConnection {
+        inner: RedisConnectionInner::Cluster(connection),
+        standalone_client: None,
+    })
 }
 
 impl redis::aio::ConnectionLike for RedisConnection {
@@ -37,9 +80,9 @@ impl redis::aio::ConnectionLike for RedisConnection {
         &'a mut self,
         command: &'a redis::Cmd,
     ) -> redis::RedisFuture<'a, redis::Value> {
-        match self {
-            Self::Standalone(connection) => connection.req_packed_command(command),
-            Self::Cluster(connection) => connection.req_packed_command(command),
+        match &mut self.inner {
+            RedisConnectionInner::Standalone(connection) => connection.req_packed_command(command),
+            RedisConnectionInner::Cluster(connection) => connection.req_packed_command(command),
         }
     }
 
@@ -49,35 +92,22 @@ impl redis::aio::ConnectionLike for RedisConnection {
         offset: usize,
         count: usize,
     ) -> redis::RedisFuture<'a, Vec<redis::Value>> {
-        match self {
-            Self::Standalone(connection) => connection.req_packed_commands(pipeline, offset, count),
-            Self::Cluster(connection) => connection.req_packed_commands(pipeline, offset, count),
+        match &mut self.inner {
+            RedisConnectionInner::Standalone(connection) => {
+                connection.req_packed_commands(pipeline, offset, count)
+            }
+            RedisConnectionInner::Cluster(connection) => {
+                connection.req_packed_commands(pipeline, offset, count)
+            }
         }
     }
 
     fn get_db(&self) -> i64 {
-        match self {
-            Self::Standalone(connection) => connection.get_db(),
-            Self::Cluster(connection) => connection.get_db(),
+        match &self.inner {
+            RedisConnectionInner::Standalone(connection) => connection.get_db(),
+            RedisConnectionInner::Cluster(connection) => connection.get_db(),
         }
     }
-}
-
-pub(crate) async fn standalone_connection(url: &str) -> Result<RedisConnection> {
-    let client = redis::Client::open(url).map_err(redis_error)?;
-    let connection = client.get_connection_manager().await.map_err(redis_error)?;
-    Ok(RedisConnection::Standalone(connection))
-}
-
-pub(crate) async fn cluster_connection<I, S>(nodes: I) -> Result<RedisConnection>
-where
-    I: IntoIterator<Item = S>,
-    S: Into<String>,
-{
-    let nodes = normalize_cluster_nodes(nodes)?;
-    let client = redis::cluster::ClusterClient::new(nodes).map_err(redis_error)?;
-    let connection = client.get_async_connection().await.map_err(redis_error)?;
-    Ok(RedisConnection::Cluster(connection))
 }
 
 fn normalize_cluster_nodes<I, S>(nodes: I) -> Result<Vec<String>>
@@ -99,81 +129,6 @@ where
     Ok(nodes)
 }
 
-impl RedisReplayStore {
-    /// Connects to a standalone Redis deployment.
-    pub async fn connect(url: &str, prefix: impl Into<String>) -> Result<Self> {
-        Ok(Self {
-            connection: standalone_connection(url).await?,
-            prefix: prefix.into(),
-        })
-    }
-
-    /// Connects directly to Redis Cluster nodes and discovers the complete slot map.
-    ///
-    /// The node list only seeds topology discovery. Replay ticket keys contain no hash
-    /// tag, so Redis distributes different tickets across all cluster slots.
-    pub async fn connect_cluster<I, S>(nodes: I, prefix: impl Into<String>) -> Result<Self>
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        let prefix = prefix.into();
-        if prefix.trim().is_empty() || prefix.contains(['{', '}']) {
-            return Err(Error::InvalidConfig(
-                "Redis Replay Cluster prefix must be non-empty and must not contain hash tags"
-                    .into(),
-            ));
-        }
-        Ok(Self {
-            connection: cluster_connection(nodes).await?,
-            prefix,
-        })
-    }
-
-    fn key(&self, suffix: &str) -> String {
-        format!("{}:{suffix}", self.prefix)
-    }
-}
-
-#[async_trait]
-impl ReplayStore for RedisReplayStore {
-    async fn reserve(&self, ticket_id: &str, expires_at: u64) -> Result<bool> {
-        let now = std::time::SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| Error::Unavailable)?
-            .as_secs();
-        if expires_at <= now {
-            return Ok(false);
-        }
-        let key = self.key(&format!("ticket:{ticket_id}"));
-        let ttl = expires_at - now;
-        let mut connection = self.connection.clone();
-        let result = reserve_ticket(&mut connection, &key, ttl).await?;
-        Ok(result)
-    }
-}
-
-async fn reserve_ticket(
-    connection: &mut impl redis::aio::ConnectionLike,
-    key: &str,
-    ttl: u64,
-) -> Result<bool> {
-    let result: Option<String> = redis::cmd("SET")
-        .arg(key)
-        .arg("1")
-        .arg("NX")
-        .arg("EX")
-        .arg(ttl)
-        .query_async(connection)
-        .await
-        .map_err(redis_error)?;
-    Ok(result.is_some())
-}
-
-fn redis_error(error: redis::RedisError) -> Error {
-    map_redis_error("redis", error)
-}
-
 pub(crate) fn map_redis_error(context: &str, error: redis::RedisError) -> Error {
     let detail = format!("{context}: {error}");
     if !matches!(error.retry_method(), redis::RetryMethod::NoRetry) {
@@ -185,6 +140,24 @@ pub(crate) fn map_redis_error(context: &str, error: redis::RedisError) -> Error 
         }
         _ => Error::Internal(detail),
     }
+}
+
+fn connection_error(error: redis::RedisError) -> Error {
+    map_redis_error("Redis connection", error)
+}
+
+pub(crate) fn validate_key_prefix(prefix: &str) -> Result<()> {
+    if prefix.is_empty()
+        || prefix.len() > 128
+        || !prefix
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+    {
+        return Err(Error::InvalidConfig(
+            "Redis key prefix must contain only letters, digits, '-', '_', '.' or ':'".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -228,13 +201,13 @@ mod tests {
 
     #[tokio::test]
     async fn cluster_connection_requires_a_seed_node() {
-        let result = RedisReplayStore::connect_cluster(Vec::<String>::new(), "elura").await;
+        let result = cluster_connection(Vec::<String>::new()).await;
         assert!(matches!(result, Err(Error::InvalidConfig(_))));
     }
 
-    #[tokio::test]
-    async fn cluster_connection_rejects_a_hash_tagged_prefix() {
-        let result = RedisReplayStore::connect_cluster(["redis://127.0.0.1/"], "{elura}").await;
+    #[test]
+    fn key_prefix_rejects_hash_tags() {
+        let result = validate_key_prefix("{elura}");
         assert!(matches!(result, Err(Error::InvalidConfig(_))));
     }
 }

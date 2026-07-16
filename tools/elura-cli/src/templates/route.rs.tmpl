@@ -1,4 +1,4 @@
-use elura::world::{Route, WorldBuilder, WorldContext};
+use elura::world::{Route, WorldContext, WorldModuleRegistry};
 use elura::Result;
 
 use crate::proto::{{MODULE}}::v2::{{TYPE}}Request;
@@ -14,8 +14,8 @@ impl Route for {{TYPE}} {
     type Response = {{TYPE}}Response;
 }
 
-pub fn register(builder: &mut WorldBuilder) -> Result<()> {
-    builder.register({{TYPE}}, handle)?;
+pub fn mount(world: &mut WorldModuleRegistry<'_>) -> Result<()> {
+    world.route({{TYPE}}, handle)?;
     Ok(())
 }
 

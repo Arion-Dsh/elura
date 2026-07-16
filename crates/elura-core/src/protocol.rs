@@ -26,6 +26,7 @@ pub const FIRST_APPLICATION_ROUTE: u32 = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum FrameKind {
     Request = 1,
     Response = 2,

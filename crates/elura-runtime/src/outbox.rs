@@ -1,19 +1,21 @@
+//! Outbox dispatch and delivery idempotency runtime.
+
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
+use elura_core::outbox::{OutboxDelivery, OutboxEvent, OutboxStore};
 use elura_core::{Error, Result};
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::watch;
 use uuid::Uuid;
 
-use super::{OutboxDelivery, OutboxEvent, OutboxStore};
-
 #[async_trait]
+/// Application handler invoked for each acquired outbox event.
 pub trait EventHandler: Send + Sync + 'static {
+    /// Applies the event's business effect.
     async fn handle(&self, event: OutboxEvent) -> Result<()>;
 }
 
@@ -36,11 +38,14 @@ where
 /// make externally visible effects idempotent with their own stable business
 /// key and transactional constraint.
 pub trait IdempotencyStore: Send + Sync + 'static {
+    /// Returns whether this event was already completed by the dispatcher.
     async fn seen(&self, id: Uuid) -> Result<bool>;
+    /// Records a completed event until the supplied expiration time.
     async fn mark(&self, id: Uuid, expires_at: SystemTime) -> Result<()>;
 }
 
 #[derive(Default)]
+/// In-memory idempotency store for tests and single-process development.
 pub struct MemoryIdempotencyStore {
     seen: Mutex<HashMap<Uuid, SystemTime>>,
 }
@@ -67,16 +72,28 @@ impl IdempotencyStore for MemoryIdempotencyStore {
 }
 
 #[derive(Clone)]
+#[non_exhaustive]
+/// Operational settings for an outbox dispatcher.
 pub struct DispatcherConfig {
+    /// Stable worker identity used to own delivery leases.
     pub worker_id: String,
+    /// Maximum events acquired in one polling cycle.
     pub batch_size: usize,
+    /// Duration of each delivery ownership lease.
     pub lease: Duration,
+    /// Delay between polling cycles that acquire no events.
     pub poll_interval: Duration,
+    /// Maximum duration allowed for one handler invocation.
     pub processing_timeout: Duration,
+    /// Delivery attempt at which an event is dead-lettered.
     pub max_attempts: u32,
+    /// Backoff applied after the first failed attempt.
     pub initial_backoff: Duration,
+    /// Upper bound for exponential retry backoff.
     pub max_backoff: Duration,
+    /// Retention period for dispatcher-level idempotency records.
     pub idempotency_ttl: Duration,
+    /// Optional dispatcher-level duplicate suppression store.
     pub idempotency: Option<Arc<dyn IdempotencyStore>>,
 }
 
@@ -118,12 +135,20 @@ impl DispatcherConfig {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
+/// Cumulative dispatcher counters.
 pub struct DispatcherStats {
+    /// Deliveries acquired from the store.
     pub claimed: u64,
+    /// Deliveries acknowledged after successful or already-applied handling.
     pub completed: u64,
+    /// Deliveries scheduled for another attempt.
     pub retried: u64,
+    /// Deliveries moved to the dead-letter store.
     pub dead_lettered: u64,
+    /// Deliveries skipped by dispatcher-level duplicate detection.
     pub duplicates: u64,
+    /// Handler attempts that returned an error or timed out.
     pub failures: u64,
 }
 
@@ -137,6 +162,7 @@ struct AtomicStats {
     failures: AtomicU64,
 }
 
+/// Concurrent lease-renewing transactional outbox dispatcher.
 pub struct Dispatcher {
     store: Arc<dyn OutboxStore>,
     handler: Arc<dyn EventHandler>,
@@ -145,6 +171,7 @@ pub struct Dispatcher {
 }
 
 impl Dispatcher {
+    /// Creates a dispatcher after validating its operational settings.
     pub fn new(
         store: Arc<dyn OutboxStore>,
         handler: Arc<dyn EventHandler>,
@@ -159,6 +186,7 @@ impl Dispatcher {
         })
     }
 
+    /// Polls continuously until shutdown is requested.
     pub async fn run(&self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
         loop {
             if *shutdown.borrow() {
@@ -183,6 +211,7 @@ impl Dispatcher {
         }
     }
 
+    /// Acquires and processes one batch, returning the number of deliveries claimed.
     pub async fn run_once(&self) -> Result<usize> {
         let deliveries = self
             .store
@@ -279,6 +308,7 @@ impl Dispatcher {
             .min(self.config.max_backoff)
     }
 
+    /// Returns a snapshot of cumulative dispatcher counters.
     pub fn stats(&self) -> DispatcherStats {
         DispatcherStats {
             claimed: self.stats.claimed.load(Ordering::Relaxed),
@@ -288,160 +318,5 @@ impl Dispatcher {
             duplicates: self.stats.duplicates.load(Ordering::Relaxed),
             failures: self.stats.failures.load(Ordering::Relaxed),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::atomic::AtomicUsize;
-
-    use super::*;
-    use crate::outbox::MemoryOutbox;
-
-    #[tokio::test]
-    async fn retries_then_dead_letters_without_losing_payload() {
-        let store = Arc::new(MemoryOutbox::new());
-        let event = OutboxEvent::new("mail", b"body".to_vec()).unwrap();
-        store.append(event).await.unwrap();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let dispatcher = Dispatcher::new(
-            store.clone(),
-            Arc::new({
-                let calls = calls.clone();
-                move |event: OutboxEvent| {
-                    calls.fetch_add(1, Ordering::SeqCst);
-                    async move {
-                        assert_eq!(event.payload, b"body");
-                        Err(Error::Unavailable)
-                    }
-                }
-            }),
-            DispatcherConfig {
-                max_attempts: 2,
-                initial_backoff: Duration::from_millis(1),
-                max_backoff: Duration::from_millis(1),
-                ..DispatcherConfig::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(dispatcher.run_once().await.unwrap(), 1);
-        tokio::time::sleep(Duration::from_millis(2)).await;
-        assert_eq!(dispatcher.run_once().await.unwrap(), 1);
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-        assert_eq!(store.list_dead_letters(10).await.unwrap().len(), 1);
-        assert_eq!(dispatcher.stats().dead_lettered, 1);
-    }
-
-    #[tokio::test]
-    async fn idempotency_skips_duplicate_business_effect() {
-        let store = Arc::new(MemoryOutbox::new());
-        let event = OutboxEvent::new("reward", vec![1]).unwrap();
-        store.append(event.clone()).await.unwrap();
-        let idempotency = Arc::new(MemoryIdempotencyStore::default());
-        idempotency
-            .mark(event.id, SystemTime::now() + Duration::from_secs(60))
-            .await
-            .unwrap();
-        let dispatcher = Dispatcher::new(
-            store,
-            Arc::new(|_: OutboxEvent| async { panic!("handler must be skipped") }),
-            DispatcherConfig {
-                idempotency: Some(idempotency),
-                ..DispatcherConfig::default()
-            },
-        )
-        .unwrap();
-        dispatcher.run_once().await.unwrap();
-        assert_eq!(dispatcher.stats().duplicates, 1);
-    }
-
-    #[tokio::test]
-    async fn renews_lease_while_a_slow_handler_runs() {
-        let store = Arc::new(MemoryOutbox::new());
-        store
-            .append(OutboxEvent::new("slow", vec![1]).unwrap())
-            .await
-            .unwrap();
-        let dispatcher = Arc::new(
-            Dispatcher::new(
-                store.clone(),
-                Arc::new(|_: OutboxEvent| async {
-                    tokio::time::sleep(Duration::from_millis(80)).await;
-                    Ok(())
-                }),
-                DispatcherConfig {
-                    lease: Duration::from_millis(30),
-                    ..DispatcherConfig::default()
-                },
-            )
-            .unwrap(),
-        );
-        let task = tokio::spawn({
-            let dispatcher = dispatcher.clone();
-            async move { dispatcher.run_once().await }
-        });
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(
-            store
-                .acquire("other", 1, Duration::from_secs(1))
-                .await
-                .unwrap()
-                .is_empty()
-        );
-        assert_eq!(task.await.unwrap().unwrap(), 1);
-    }
-
-    #[tokio::test]
-    async fn times_out_a_stuck_handler_and_schedules_retry() {
-        let store = Arc::new(MemoryOutbox::new());
-        store
-            .append(OutboxEvent::new("stuck", vec![1]).unwrap())
-            .await
-            .unwrap();
-        let dispatcher = Dispatcher::new(
-            store,
-            Arc::new(|_: OutboxEvent| async { std::future::pending::<Result<()>>().await }),
-            DispatcherConfig {
-                processing_timeout: Duration::from_millis(10),
-                initial_backoff: Duration::from_millis(1),
-                max_backoff: Duration::from_millis(1),
-                ..DispatcherConfig::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(dispatcher.run_once().await.unwrap(), 1);
-        assert_eq!(dispatcher.stats().retried, 1);
-    }
-
-    #[tokio::test]
-    async fn shutdown_cancels_an_in_flight_batch() {
-        let store = Arc::new(MemoryOutbox::new());
-        store
-            .append(OutboxEvent::new("stuck", vec![1]).unwrap())
-            .await
-            .unwrap();
-        let dispatcher = Arc::new(
-            Dispatcher::new(
-                store,
-                Arc::new(|_: OutboxEvent| async { std::future::pending::<Result<()>>().await }),
-                DispatcherConfig {
-                    processing_timeout: Duration::from_secs(60),
-                    ..DispatcherConfig::default()
-                },
-            )
-            .unwrap(),
-        );
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let task = tokio::spawn({
-            let dispatcher = dispatcher.clone();
-            async move { dispatcher.run(shutdown_rx).await }
-        });
-        tokio::task::yield_now().await;
-        shutdown_tx.send(true).unwrap();
-        tokio::time::timeout(Duration::from_secs(1), task)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
     }
 }

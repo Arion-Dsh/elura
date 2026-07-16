@@ -9,6 +9,7 @@ use elura_core::{Error, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AdmissionStage {
     Connected,
     Authenticated,
@@ -80,6 +81,7 @@ impl AdmissionRejection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AdmissionDecision {
     Allow,
     Deny(AdmissionRejection),

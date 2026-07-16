@@ -69,6 +69,7 @@ impl Identity {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SessionControlKind {
     Login,
     ForceLogout,
@@ -124,6 +125,7 @@ pub trait SessionControlTransport: Send + Sync {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SessionState {
     Anonymous,
     Authenticated,

@@ -1,27 +1,33 @@
 use std::fmt::Write;
 
 #[derive(Default)]
+/// Incremental renderer for Prometheus text exposition format.
 pub struct PrometheusText {
     output: String,
 }
 
 impl PrometheusText {
+    /// Appends an integer counter sample.
     pub fn counter(&mut self, name: &str, help: &str, value: u64) -> &mut Self {
         self.metric(name, help, "counter", value)
     }
 
+    /// Appends a floating-point counter sample.
     pub fn counter_float(&mut self, name: &str, help: &str, value: f64) -> &mut Self {
         self.metric(name, help, "counter", value)
     }
 
+    /// Appends an integer gauge sample.
     pub fn gauge(&mut self, name: &str, help: &str, value: i64) -> &mut Self {
         self.metric(name, help, "gauge", value)
     }
 
+    /// Appends a floating-point gauge sample.
     pub fn gauge_float(&mut self, name: &str, help: &str, value: f64) -> &mut Self {
         self.metric(name, help, "gauge", value)
     }
 
+    /// Appends histogram buckets, sum and sample count.
     pub fn histogram(
         &mut self,
         name: &str,
@@ -53,6 +59,7 @@ impl PrometheusText {
         self
     }
 
+    /// Appends an already-rendered metrics fragment.
     pub fn append(&mut self, other: &str) -> &mut Self {
         self.output.push_str(other);
         if !other.is_empty() && !other.ends_with('\n') {
@@ -61,6 +68,7 @@ impl PrometheusText {
         self
     }
 
+    /// Finishes rendering and returns the accumulated text.
     pub fn finish(self) -> String {
         self.output
     }

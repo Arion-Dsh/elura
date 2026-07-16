@@ -24,6 +24,7 @@ use super::{
 use crate::{ProviderError, ProviderResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AppleEnvironment {
     Production,
     Sandbox,
@@ -39,6 +40,7 @@ impl AppleEnvironment {
 }
 
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct AppleConfig {
     pub issuer_id: String,
     pub bundle_id: String,
@@ -53,6 +55,41 @@ pub struct AppleConfig {
     /// Keep this list restricted to the Apple roots documented for App Store
     /// Server API certificate chains. General WebPKI roots are not accepted.
     pub trusted_roots_der: Vec<Vec<u8>>,
+}
+
+impl AppleConfig {
+    /// Creates App Store configuration without roots or an app numeric ID.
+    pub fn new(
+        issuer_id: impl Into<String>,
+        bundle_id: impl Into<String>,
+        key_id: impl Into<String>,
+        private_key_pem: impl Into<String>,
+        environment: AppleEnvironment,
+    ) -> Self {
+        Self {
+            issuer_id: issuer_id.into(),
+            bundle_id: bundle_id.into(),
+            app_apple_id: None,
+            key_id: key_id.into(),
+            private_key_pem: private_key_pem.into(),
+            environment,
+            base_url: String::new(),
+            timeout: Duration::from_secs(10),
+            trusted_roots_der: Vec::new(),
+        }
+    }
+
+    /// Sets the numeric App Store application identifier.
+    pub fn with_app_apple_id(mut self, app_apple_id: i64) -> Self {
+        self.app_apple_id = Some(app_apple_id);
+        self
+    }
+
+    /// Sets the Apple root certificates trusted for StoreKit JWS chains.
+    pub fn with_trusted_roots(mut self, trusted_roots_der: Vec<Vec<u8>>) -> Self {
+        self.trusted_roots_der = trusted_roots_der;
+        self
+    }
 }
 
 pub struct ApplePayment {
@@ -166,6 +203,9 @@ impl ApplePayment {
             .send()
             .await
             .map_err(|_| ProviderError::Unavailable)?;
+        if response.status().as_u16() == 429 {
+            return Err(ProviderError::RateLimited { retry_after: None });
+        }
         if !response.status().is_success() {
             return Err(ProviderError::Rejected(format!(
                 "App Store HTTP {}",
@@ -254,7 +294,9 @@ impl PaymentProvider for ApplePayment {
     async fn verify_purchase(&self, request: PurchaseRequest) -> ProviderResult<Purchase> {
         let token = request.purchase_token.trim();
         if token.is_empty() {
-            return Err(ProviderError::Rejected("purchase token is required".into()));
+            return Err(ProviderError::InvalidRequest(
+                "purchase token is required".into(),
+            ));
         }
         let signed = if token.split('.').count() == 3 {
             token.to_owned()

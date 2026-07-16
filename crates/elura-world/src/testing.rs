@@ -111,7 +111,8 @@ impl WorldHarness {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Route, WorldBuilder, WorldConfig};
+    use crate::runtime::WorldBuilder;
+    use crate::{Route, WorldConfig};
 
     #[derive(Clone, PartialEq, Message)]
     struct Echo {

@@ -67,6 +67,7 @@ impl TrustedProxies {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ProxyProtocolConfig {
     pub trusted_proxies: TrustedProxies,
     pub header_timeout: Duration,
