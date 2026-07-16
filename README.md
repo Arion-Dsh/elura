@@ -39,9 +39,11 @@ Install the CLI and scaffold an application:
 
 ```bash
 cargo install elura-cli
+elura skill install
 elura init all --dir .
 ```
 
+The skill is installed in `.agents/skills/elura-app-development` for project-level coding agents.
 The generated project includes Gateway, World, and monolith binaries, configuration, Docker
 assets, Kubernetes manifests, and client SDK generation. Continue with the
 [documentation](https://elura.rustyspottedcat.dev/).

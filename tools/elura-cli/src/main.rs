@@ -9,6 +9,7 @@ const PROFILE_ORDER: &[&str] = &["config", "gateway", "world", "docker", "k8s"];
 const TARGETS: &[&str] = &[
     "config", "gateway", "world", "monolith", "module", "route", "sdk", "docker", "k8s", "all",
 ];
+const APP_SKILL_NAME: &str = "elura-app-development";
 
 #[derive(Clone, Copy)]
 struct Artifact {
@@ -226,6 +227,20 @@ const SDK_TYPESCRIPT: &[Artifact] = &[
         template: include_str!("templates/sdk/session_control.proto"),
     },
 ];
+const APP_SKILL: &[Artifact] = &[
+    Artifact {
+        path: "SKILL.md",
+        template: include_str!("skills/elura-app-development/SKILL.md"),
+    },
+    Artifact {
+        path: "references/architecture.md",
+        template: include_str!("skills/elura-app-development/references/architecture.md"),
+    },
+    Artifact {
+        path: "references/implementation.md",
+        template: include_str!("skills/elura-app-development/references/implementation.md"),
+    },
+];
 
 #[derive(Default)]
 struct Options {
@@ -291,6 +306,7 @@ fn try_run(arguments: Vec<OsString>, stdout: &mut dyn Write) -> Result<(), RunEr
                 .map_err(operation_error);
         }
         "help" => return help_command(&arguments[1..], stdout),
+        "skill" => return skill_command(&arguments[1..], stdout),
         "init" => {}
         command => return Err(usage_error(format!("unknown command {command:?}"))),
     }
@@ -344,6 +360,10 @@ fn help_command(arguments: &[String], stdout: &mut dyn Write) -> Result<(), RunE
     match arguments {
         [] => write_help(stdout, None),
         [command] if command == "init" => write_help(stdout, Some("init")),
+        [command] if command == "skill" => write_help(stdout, Some("skill")),
+        [command, action] if command == "skill" && action == "install" => {
+            write_help(stdout, Some("skill-install"))
+        }
         [command, target] if command == "init" => {
             let target = if target == "kubernetes" {
                 "k8s"
@@ -356,8 +376,39 @@ fn help_command(arguments: &[String], stdout: &mut dyn Write) -> Result<(), RunE
                 Err(usage_error(format!("unknown target {target:?}")))
             }
         }
-        _ => Err(usage_error("usage: elura help [init [target]]")),
+        _ => Err(usage_error(
+            "usage: elura help [init [target] | skill [install]]",
+        )),
     }
+}
+
+fn skill_command(arguments: &[String], stdout: &mut dyn Write) -> Result<(), RunError> {
+    let Some(action) = arguments.first().map(String::as_str) else {
+        return Err(usage_error("missing skill command"));
+    };
+    if matches!(action, "--help" | "-h") {
+        return write_help(stdout, Some("skill"));
+    }
+    if action != "install" {
+        return Err(usage_error(format!("unknown skill command {action:?}")));
+    }
+    if arguments[1..]
+        .iter()
+        .any(|argument| matches!(argument.as_str(), "--help" | "-h"))
+    {
+        return write_help(stdout, Some("skill-install"));
+    }
+
+    let options = parse_skill_options(&arguments[1..])?;
+    let project = std::path::absolute(&options.directory)
+        .map_err(|error| RunError::Operation(error.to_string()))?;
+    let root = project.join(".agents").join("skills").join(APP_SKILL_NAME);
+    let artifacts = render_artifacts(APP_SKILL.iter().collect());
+    if options.dry_run {
+        return preview("agent skill", &root, &artifacts, options.force, stdout);
+    }
+    generate(&root, &artifacts, options.force).map_err(RunError::Operation)?;
+    writeln!(stdout, "installed {APP_SKILL_NAME} in {}", root.display()).map_err(operation_error)
 }
 
 fn write_help(stdout: &mut dyn Write, topic: Option<&str>) -> Result<(), RunError> {
@@ -371,6 +422,7 @@ fn write_help(stdout: &mut dyn Write, topic: Option<&str>) -> Result<(), RunErro
             "\n",
             "Commands:\n",
             "  init  Generate project files\n",
+            "  skill Install development skills for coding agents\n",
             "  help  Print help for a command or target\n",
             "\n",
             "Options:\n",
@@ -397,6 +449,30 @@ fn write_help(stdout: &mut dyn Write, topic: Option<&str>) -> Result<(), RunErro
             "Common options:\n",
             "  -d, --dir <PATH>  Output directory [default: .]\n",
             "  -f, --force       Overwrite existing files\n",
+            "      --dry-run     Show planned changes without writing files\n",
+            "  -h, --help        Print help\n",
+        )),
+        Some("skill") => String::from(concat!(
+            "Install Elura development skills for coding agents\n",
+            "\n",
+            "Usage: elura skill <COMMAND>\n",
+            "\n",
+            "Commands:\n",
+            "  install  Install the Elura application-development skill\n",
+            "\n",
+            "Options:\n",
+            "  -h, --help  Print help\n",
+        )),
+        Some("skill-install") => String::from(concat!(
+            "Install the Elura application-development skill\n",
+            "\n",
+            "Usage: elura skill install [OPTIONS]\n",
+            "\n",
+            "The skill is installed in <PROJECT>/.agents/skills/elura-app-development.\n",
+            "\n",
+            "Options:\n",
+            "  -d, --dir <PATH>  Project root [default: .]\n",
+            "  -f, --force       Overwrite existing skill files\n",
             "      --dry-run     Show planned changes without writing files\n",
             "  -h, --help        Print help\n",
         )),
@@ -485,6 +561,20 @@ fn parse_options(arguments: &[String]) -> Result<Options, RunError> {
             _ => unreachable!(),
         }
         index += 1;
+    }
+    Ok(options)
+}
+
+fn parse_skill_options(arguments: &[String]) -> Result<Options, RunError> {
+    let options = parse_options(arguments)?;
+    if !options.name.is_empty()
+        || !options.module.is_empty()
+        || options.route_id.is_some()
+        || !options.language.is_empty()
+    {
+        return Err(usage_error(
+            "skill install supports only --dir, --force, and --dry-run",
+        ));
     }
     Ok(options)
 }
@@ -840,6 +930,56 @@ mod tests {
     }
 
     #[test]
+    fn installs_project_level_cross_agent_skill() {
+        let directory = TestDir::new("skill-install");
+        let dir = directory.0.to_str().unwrap();
+        let (code, stdout, stderr) = execute(&["skill", "install", "--dir", dir]);
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("installed elura-app-development"));
+
+        let root = directory.0.join(".agents/skills/elura-app-development");
+        for path in [
+            "SKILL.md",
+            "references/architecture.md",
+            "references/implementation.md",
+        ] {
+            assert!(!fs::read(root.join(path)).unwrap().is_empty(), "{path}");
+        }
+        let skill = fs::read_to_string(root.join("SKILL.md")).unwrap();
+        assert!(skill.contains("name: elura-app-development"));
+        assert!(!skill.contains("{{"));
+    }
+
+    #[test]
+    fn skill_install_supports_dry_run_and_requires_force_for_conflicts() {
+        let directory = TestDir::new("skill-dry-run");
+        let dir = directory.0.to_str().unwrap();
+        let skill = directory
+            .0
+            .join(".agents/skills/elura-app-development/SKILL.md");
+
+        let (code, stdout, stderr) = execute(&["skill", "install", "--dir", dir, "--dry-run"]);
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("create    SKILL.md"));
+        assert!(!skill.exists());
+
+        fs::create_dir_all(skill.parent().unwrap()).unwrap();
+        fs::write(&skill, "existing").unwrap();
+        let (code, _, stderr) = execute(&["skill", "install", "--dir", dir]);
+        assert_eq!(code, 1);
+        assert!(stderr.contains("use --force to overwrite"));
+        assert_eq!(fs::read_to_string(&skill).unwrap(), "existing");
+
+        let (code, _, stderr) = execute(&["skill", "install", "--dir", dir, "--force"]);
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            fs::read_to_string(&skill)
+                .unwrap()
+                .contains("name: elura-app-development")
+        );
+    }
+
+    #[test]
     fn existing_files_require_force_and_preflight_is_atomic() {
         let directory = TestDir::new("force");
         let path = directory.0.join("src/bin/world.rs");
@@ -1026,6 +1166,10 @@ mod tests {
             vec!["help", "init", "route"],
             vec!["init", "sdk", "--help"],
             vec!["help", "init", "sdk"],
+            vec!["skill", "--help"],
+            vec!["help", "skill"],
+            vec!["skill", "install", "--help"],
+            vec!["help", "skill", "install"],
         ] {
             let (code, stdout, stderr) = execute(&arguments);
             assert_eq!(code, 0, "{arguments:?}: {stderr}");
