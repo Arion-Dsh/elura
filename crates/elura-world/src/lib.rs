@@ -18,7 +18,7 @@ mod stats;
 mod testing;
 
 pub use config::WorldConfig;
-pub use context::{ContextKey, TransactionHandle, WorldContext};
+pub use context::{ContextKey, TransactionGuard, WorldContext};
 pub use elura_core::gateway_world::{
     GatewayWorldCommand, GatewayWorldIdentity, WorldClient, WorldCommand, WorldRegistrar,
     WorldRequest,
@@ -30,7 +30,7 @@ pub use middleware::{
     WorldTransaction,
 };
 pub use module::WorldModule;
-pub use routes::{Route, RouteInfo};
+pub use routes::{Event, Route, RouteInfo};
 pub use runtime::WorldBuilder;
 pub use server::{InProcessWorldClient, WorldDiagnostics, WorldServer};
 pub use stats::WorldStatsSnapshot;

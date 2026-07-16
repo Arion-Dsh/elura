@@ -863,19 +863,24 @@ mod tests {
                 events: events.clone(),
             }))
             .unwrap()
-            .register_raw_with_middleware(
-                100,
-                |_context, payload: Bytes| async move { Ok(payload) },
-                [Arc::new(RecordingMiddleware {
+            .register(EchoEndpoint, |_context, request| async move { Ok(request) })
+            .unwrap()
+            .use_route_middleware(
+                EchoEndpoint,
+                Arc::new(RecordingMiddleware {
                     name: "route",
                     events: events.clone(),
-                }) as Arc<dyn WorldMiddleware>],
+                }),
             )
             .unwrap();
         let server = builder.build().unwrap();
         server
             .runtime
-            .execute(100, 1, command(1, b"ok"))
+            .execute(
+                100,
+                1,
+                command(1, &Echo { value: "ok".into() }.encode_to_vec()),
+            )
             .await
             .unwrap();
         assert_eq!(*events.lock().unwrap(), vec!["global", "route"]);
@@ -928,6 +933,7 @@ mod tests {
     struct TestTransaction {
         commits: Arc<AtomicUsize>,
         rollbacks: Arc<AtomicUsize>,
+        accesses: Arc<AtomicUsize>,
         slow_commit: bool,
     }
 
@@ -954,6 +960,7 @@ mod tests {
     struct TestTransactions {
         commits: Arc<AtomicUsize>,
         rollbacks: Arc<AtomicUsize>,
+        accesses: Arc<AtomicUsize>,
         slow_commit: bool,
     }
 
@@ -963,6 +970,7 @@ mod tests {
             Ok(Box::new(TestTransaction {
                 commits: self.commits.clone(),
                 rollbacks: self.rollbacks.clone(),
+                accesses: self.accesses.clone(),
                 slow_commit: self.slow_commit,
             }))
         }
@@ -972,13 +980,21 @@ mod tests {
     async fn transaction_commits_or_rolls_back() {
         let commits = Arc::new(AtomicUsize::new(0));
         let rollbacks = Arc::new(AtomicUsize::new(0));
+        let accesses = Arc::new(AtomicUsize::new(0));
         let mut builder = WorldBuilder::new(WorldConfig {
             handler_timeout: Duration::from_millis(10),
             ..WorldConfig::default()
         })
         .unwrap();
         builder
-            .register_raw(100, |_context, payload: Bytes| async move {
+            .register_raw(100, |context: WorldContext, payload: Bytes| async move {
+                let mut transaction = context.transaction::<TestTransaction>().await?;
+                tokio::task::yield_now().await;
+                transaction
+                    .get_mut()
+                    .accesses
+                    .fetch_add(1, Ordering::SeqCst);
+                drop(transaction);
                 if payload == Bytes::from_static(b"timeout") {
                     std::future::pending::<Result<Bytes>>().await
                 } else if payload == Bytes::from_static(b"fail") {
@@ -992,6 +1008,7 @@ mod tests {
                 TestTransactions {
                     commits: commits.clone(),
                     rollbacks: rollbacks.clone(),
+                    accesses: accesses.clone(),
                     slow_commit: false,
                 },
             ))))
@@ -1015,12 +1032,14 @@ mod tests {
         }
         assert_eq!(commits.load(Ordering::SeqCst), 1);
         assert_eq!(rollbacks.load(Ordering::SeqCst), 2);
+        assert_eq!(accesses.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test]
     async fn cancelled_commit_still_rolls_back() {
         let commits = Arc::new(AtomicUsize::new(0));
         let rollbacks = Arc::new(AtomicUsize::new(0));
+        let accesses = Arc::new(AtomicUsize::new(0));
         let mut builder = WorldBuilder::new(WorldConfig {
             handler_timeout: Duration::from_millis(10),
             ..WorldConfig::default()
@@ -1033,6 +1052,7 @@ mod tests {
                 TestTransactions {
                     commits: commits.clone(),
                     rollbacks: rollbacks.clone(),
+                    accesses,
                     slow_commit: true,
                 },
             ))))

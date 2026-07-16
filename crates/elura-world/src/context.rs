@@ -1,37 +1,75 @@
 use std::any::Any;
 use std::collections::HashMap;
 use std::marker::PhantomData;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
+use elura_core::protocol::FIRST_APPLICATION_ROUTE;
 use elura_core::push::{PushReceipt, PushRequest, PushTarget, PushTransport};
 use elura_core::session::Identity;
 use elura_core::{Error, Result};
+use prost::Message;
+use tokio::sync::{Mutex, MutexGuard};
 use uuid::Uuid;
 
+use super::Event;
 use super::middleware::WorldTransaction;
 
 #[derive(Clone)]
-pub struct TransactionHandle {
+pub(crate) struct TransactionHandle {
     pub(crate) inner: Arc<Mutex<Option<Box<dyn WorldTransaction>>>>,
 }
 
+/// Typed access to the current unit-of-work transaction.
+pub struct TransactionGuard<'a, T> {
+    inner: MutexGuard<'a, Option<Box<dyn WorldTransaction>>>,
+    marker: PhantomData<T>,
+}
+
 impl TransactionHandle {
-    pub async fn with<T, R>(&self, operation: impl FnOnce(&mut T) -> Result<R>) -> Result<R>
+    async fn lock<T>(&self) -> Result<TransactionGuard<'_, T>>
     where
         T: Any + Send + 'static,
     {
-        let mut transaction = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let transaction = transaction.as_mut().ok_or(Error::Unavailable)?;
-        let typed = transaction
+        let mut inner = self.inner.lock().await;
+        inner
+            .as_mut()
+            .ok_or(Error::Unavailable)?
             .as_any_mut()
             .downcast_mut::<T>()
             .ok_or_else(|| Error::InvalidConfig("unexpected transaction type".into()))?;
-        operation(typed)
+        Ok(TransactionGuard {
+            inner,
+            marker: PhantomData,
+        })
+    }
+}
+
+impl<T> TransactionGuard<'_, T>
+where
+    T: Any + Send + 'static,
+{
+    /// Returns the application transaction while retaining the unit-of-work lock.
+    ///
+    /// The guard may be held across `.await`, allowing asynchronous database
+    /// operations to participate in the surrounding unit of work.
+    pub fn get_mut(&mut self) -> &mut T {
+        self.inner
+            .as_mut()
+            .expect("transaction checked when guard was created")
+            .as_any_mut()
+            .downcast_mut::<T>()
+            .expect("transaction type checked when guard was created")
+    }
+}
+
+impl<T> AsMut<T> for TransactionGuard<'_, T>
+where
+    T: Any + Send + 'static,
+{
+    fn as_mut(&mut self) -> &mut T {
+        self.get_mut()
     }
 }
 
@@ -99,8 +137,15 @@ impl WorldContext {
         self
     }
 
-    pub fn transaction(&self) -> Result<TransactionHandle> {
-        self.transaction.clone().ok_or(Error::Unavailable)
+    pub async fn transaction<T>(&self) -> Result<TransactionGuard<'_, T>>
+    where
+        T: Any + Send + 'static,
+    {
+        self.transaction
+            .as_ref()
+            .ok_or(Error::Unavailable)?
+            .lock::<T>()
+            .await
     }
 
     pub fn with_value<T>(mut self, key: &ContextKey<T>, value: T) -> Self
@@ -121,37 +166,49 @@ impl WorldContext {
             .and_then(|value| value.downcast::<T>().ok())
     }
 
-    pub async fn push_session(&self, route: u32, payload: Bytes) -> Result<PushReceipt> {
-        self.publish(PushTarget::Session(self.session_id), route, 0, payload)
+    pub async fn push_session<E: Event>(
+        &self,
+        _event: E,
+        message: &E::Message,
+    ) -> Result<PushReceipt> {
+        self.publish_event::<E>(PushTarget::Session(self.session_id), 0, message)
             .await
     }
 
-    pub async fn push_user(&self, route: u32, payload: Bytes) -> Result<PushReceipt> {
-        self.publish(PushTarget::User(self.identity.user_id), route, 0, payload)
+    pub async fn push_user<E: Event>(
+        &self,
+        _event: E,
+        message: &E::Message,
+    ) -> Result<PushReceipt> {
+        self.publish_event::<E>(PushTarget::User(self.identity.user_id), 0, message)
             .await
     }
 
-    pub async fn push_users(
+    pub async fn push_users<E: Event>(
         &self,
         users: Vec<i64>,
-        route: u32,
-        payload: Bytes,
+        _event: E,
+        message: &E::Message,
     ) -> Result<PushReceipt> {
-        self.publish(PushTarget::Users(users), route, 0, payload)
+        self.publish_event::<E>(PushTarget::Users(users), 0, message)
             .await
     }
 
-    pub async fn push_realm(&self, route: u32, payload: Bytes) -> Result<PushReceipt> {
-        self.publish(PushTarget::Realm, route, 0, payload).await
+    pub async fn push_realm<E: Event>(
+        &self,
+        _event: E,
+        message: &E::Message,
+    ) -> Result<PushReceipt> {
+        self.publish_event::<E>(PushTarget::Realm, 0, message).await
     }
 
-    pub async fn push_topic(
+    pub async fn push_topic<E: Event>(
         &self,
         topic: impl Into<String>,
-        route: u32,
-        payload: Bytes,
+        _event: E,
+        message: &E::Message,
     ) -> Result<PushReceipt> {
-        self.publish(PushTarget::Topic(topic.into()), route, 0, payload)
+        self.publish_event::<E>(PushTarget::Topic(topic.into()), 0, message)
             .await
     }
 
@@ -181,14 +238,35 @@ impl WorldContext {
         .await
     }
 
-    pub async fn push_sequenced(
+    pub async fn push_sequenced<E: Event>(
         &self,
         target: PushTarget,
-        route: u32,
+        _event: E,
         sequence: u32,
-        payload: Bytes,
+        message: &E::Message,
     ) -> Result<PushReceipt> {
-        self.publish(target, route, sequence, payload).await
+        self.publish_event::<E>(target, sequence, message).await
+    }
+
+    async fn publish_event<E: Event>(
+        &self,
+        target: PushTarget,
+        sequence: u32,
+        message: &E::Message,
+    ) -> Result<PushReceipt> {
+        if E::ID < FIRST_APPLICATION_ROUTE {
+            return Err(Error::InvalidConfig(format!(
+                "event route {} is reserved",
+                E::ID
+            )));
+        }
+        self.publish(
+            target,
+            E::ID,
+            sequence,
+            Bytes::from(message.encode_to_vec()),
+        )
+        .await
     }
 
     async fn publish(
@@ -210,5 +288,104 @@ impl WorldContext {
                 payload,
             })
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex as StdMutex;
+
+    use elura_core::push::{PushHandler, PushTarget};
+
+    use super::*;
+
+    #[derive(Clone, PartialEq, Message)]
+    struct PlayerUpdated {
+        #[prost(uint64, tag = "1")]
+        version: u64,
+    }
+
+    struct PlayerUpdatedEvent;
+
+    impl Event for PlayerUpdatedEvent {
+        const ID: u32 = 120;
+        type Message = PlayerUpdated;
+    }
+
+    struct ReservedEvent;
+
+    impl Event for ReservedEvent {
+        const ID: u32 = 4;
+        type Message = PlayerUpdated;
+    }
+
+    #[derive(Default)]
+    struct CapturePush {
+        request: StdMutex<Option<PushRequest>>,
+    }
+
+    #[async_trait::async_trait]
+    impl PushTransport for CapturePush {
+        async fn publish(&self, request: &PushRequest) -> Result<PushReceipt> {
+            *self.request.lock().unwrap() = Some(request.clone());
+            Ok(PushReceipt::accepted(request, 1))
+        }
+
+        async fn subscribe(
+            &self,
+            _handler: Arc<dyn PushHandler>,
+            mut shutdown: tokio::sync::watch::Receiver<bool>,
+        ) -> Result<()> {
+            let _ = shutdown.changed().await;
+            Ok(())
+        }
+    }
+
+    fn context(pusher: Arc<dyn PushTransport>) -> WorldContext {
+        WorldContext {
+            identity: Identity {
+                account_id: 1,
+                user_id: 2,
+                region_id: 3,
+                realm_id: 4,
+                generation: 1,
+            },
+            session_id: Uuid::new_v4(),
+            trace_id: "typed-push-test".into(),
+            route: 100,
+            request_id: 1,
+            shard_id: None,
+            owner_id: None,
+            owner_epoch: None,
+            pusher: Some(pusher),
+            transaction: None,
+            state: Arc::new(HashMap::new()),
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_push_uses_the_event_route_and_protobuf_message() {
+        let pusher = Arc::new(CapturePush::default());
+        let context = context(pusher.clone());
+        context
+            .push_session(PlayerUpdatedEvent, &PlayerUpdated { version: 7 })
+            .await
+            .unwrap();
+
+        let request = pusher.request.lock().unwrap().clone().unwrap();
+        assert_eq!(request.route, PlayerUpdatedEvent::ID);
+        assert!(matches!(request.target, PushTarget::Session(id) if id == context.session_id));
+        assert_eq!(PlayerUpdated::decode(request.payload).unwrap().version, 7);
+    }
+
+    #[tokio::test]
+    async fn typed_push_rejects_reserved_framework_routes() {
+        let context = context(Arc::new(CapturePush::default()));
+        assert!(matches!(
+            context
+                .push_user(ReservedEvent, &PlayerUpdated { version: 7 })
+                .await,
+            Err(Error::InvalidConfig(_))
+        ));
     }
 }

@@ -1,11 +1,12 @@
 use std::any::Any;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use elura_core::{Error, Result};
+use tokio::sync::Mutex;
 
 use super::context::TransactionHandle;
 use super::{WorldContext, WorldHandler};
@@ -95,16 +96,19 @@ pub struct UnitOfWorkMiddleware {
 
 struct SharedRollbackOnDrop {
     transaction: Arc<Mutex<Option<Box<dyn WorldTransaction>>>>,
+    armed: bool,
 }
 
 impl Drop for SharedRollbackOnDrop {
     fn drop(&mut self) {
-        let transaction = self
-            .transaction
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take();
-        spawn_rollback(transaction);
+        if !self.armed {
+            return;
+        }
+        let transaction = self.transaction.clone();
+        tokio::spawn(async move {
+            let transaction = transaction.lock().await.take();
+            rollback(transaction).await;
+        });
     }
 }
 
@@ -119,12 +123,14 @@ impl Drop for RollbackOnDrop {
 }
 
 fn spawn_rollback(transaction: Option<Box<dyn WorldTransaction>>) {
-    if let Some(mut transaction) = transaction {
-        tokio::spawn(async move {
-            if let Err(error) = transaction.rollback().await {
-                tracing::error!(%error, "rollback cancelled World transaction");
-            }
-        });
+    tokio::spawn(rollback(transaction));
+}
+
+async fn rollback(transaction: Option<Box<dyn WorldTransaction>>) {
+    if let Some(mut transaction) = transaction
+        && let Err(error) = transaction.rollback().await
+    {
+        tracing::error!(%error, "rollback cancelled World transaction");
     }
 }
 
@@ -141,19 +147,18 @@ impl WorldMiddleware for UnitOfWorkMiddleware {
         let handle = TransactionHandle {
             inner: Arc::new(Mutex::new(Some(transaction))),
         };
-        let shared_rollback = SharedRollbackOnDrop {
+        let mut shared_rollback = SharedRollbackOnDrop {
             transaction: handle.inner.clone(),
+            armed: true,
         };
         let result = next
             .run(context.with_transaction(handle.clone()), payload)
             .await;
-        let transaction = handle
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
-            .ok_or_else(|| Error::Internal("transaction was removed before completion".into()))?;
-        drop(shared_rollback);
+        let transaction =
+            handle.inner.lock().await.take().ok_or_else(|| {
+                Error::Internal("transaction was removed before completion".into())
+            })?;
+        shared_rollback.armed = false;
         let mut transaction = RollbackOnDrop {
             transaction: Some(transaction),
         };

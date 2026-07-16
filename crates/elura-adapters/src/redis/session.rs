@@ -94,11 +94,7 @@ impl RedisSessionControlBus {
         if config.consumer.is_empty() {
             config.consumer = gateway_id;
         }
-        if config.stream.trim().is_empty()
-            || config.stream.len() > 256
-            || !config.stream.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
-            })
+        if !valid_stream_key(&config.stream)
             || config.group.trim().is_empty()
             || config.group.len() > 256
             || config.consumer.trim().is_empty()
@@ -272,6 +268,69 @@ impl SessionControlTransport for RedisSessionControlBus {
     }
 }
 
+fn valid_stream_key(stream: &str) -> bool {
+    if stream.trim().is_empty() || stream.len() > 256 {
+        return false;
+    }
+
+    let mut tag_start = None;
+    let mut tag_closed = false;
+    for (index, byte) in stream.bytes().enumerate() {
+        if !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_' | b'.' | b':' | b'{' | b'}')
+        {
+            return false;
+        }
+        match byte {
+            b'{' if tag_start.is_some() || tag_closed => return false,
+            b'{' => tag_start = Some(index),
+            b'}' => {
+                let Some(start) = tag_start.take() else {
+                    return false;
+                };
+                if index == start + 1 {
+                    return false;
+                }
+                tag_closed = true;
+            }
+            _ => {}
+        }
+    }
+    tag_start.is_none()
+}
+
 fn redis_error(error: redis::RedisError) -> Error {
     super::map_redis_error("Redis Session Control", error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_stream_key;
+
+    #[test]
+    fn stream_key_accepts_one_well_formed_cluster_hash_tag() {
+        for key in [
+            "session:control",
+            "elura-session_control.v1",
+            "{transport}",
+            "elura:{transport}:session:control",
+        ] {
+            assert!(valid_stream_key(key), "expected valid stream key: {key}");
+        }
+    }
+
+    #[test]
+    fn stream_key_rejects_malformed_or_unsafe_cluster_hash_tags() {
+        for key in [
+            "",
+            "session control",
+            "session/control",
+            "{}",
+            "{transport",
+            "transport}",
+            "{transport}{other}",
+            "{trans{port}}",
+        ] {
+            assert!(!valid_stream_key(key), "expected invalid stream key: {key}");
+        }
+    }
 }

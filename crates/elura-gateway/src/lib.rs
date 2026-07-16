@@ -300,6 +300,22 @@ impl TcpWorldClient {
         sender
     }
 
+    fn invalidate_connection_sender(
+        &self,
+        slot: usize,
+        sender: &mpsc::Sender<PendingWorldRequest>,
+    ) {
+        let mut state = self.pool[slot]
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state
+            .as_ref()
+            .is_some_and(|current| current.same_channel(sender))
+        {
+            *state = None;
+        }
+    }
+
     fn next_transport_request_id(&self) -> u64 {
         loop {
             let current = self.transport_request_id.load(Ordering::Relaxed);
@@ -364,7 +380,10 @@ impl WorldClient for TcpWorldClient {
         match tokio::time::timeout_at(deadline, receiver).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(Error::Unavailable),
-            Err(_) => Err(Error::Timeout),
+            Err(_) => {
+                self.invalidate_connection_sender(slot, &sender);
+                Err(Error::Timeout)
+            }
         }
     }
 

@@ -87,7 +87,7 @@ pub mod prelude {
     pub use crate::world::player::{InvalidationBus, InvalidationHandler, PlayerLoader};
     #[cfg(feature = "world")]
     pub use crate::world::{
-        InProcessWorldClient, Next, Route, WorldBuilder, WorldConfig, WorldContext,
+        Event, InProcessWorldClient, Next, Route, WorldBuilder, WorldConfig, WorldContext,
         WorldDiagnostics, WorldHandler, WorldLaunchConfig, WorldLauncher, WorldMiddleware,
         WorldModule, WorldServer, WorldStatsSnapshot,
     };
@@ -109,7 +109,7 @@ pub mod prelude {
 #[cfg(feature = "world")]
 pub mod world {
     pub use elura_world::{
-        InProcessWorldClient, Next, Route, WorldBuilder, WorldConfig, WorldContext,
+        Event, InProcessWorldClient, Next, Route, WorldBuilder, WorldConfig, WorldContext,
         WorldDiagnostics, WorldHandler, WorldLaunchConfig, WorldLauncher, WorldMiddleware,
         WorldModule, WorldServer, WorldStatsSnapshot,
     };
@@ -121,7 +121,7 @@ pub mod world {
         /// Transaction support for unit-of-work middleware.
         pub mod transaction {
             pub use elura_world::{
-                TransactionFactory, TransactionHandle, UnitOfWorkMiddleware, WorldTransaction,
+                TransactionFactory, TransactionGuard, UnitOfWorkMiddleware, WorldTransaction,
             };
         }
     }

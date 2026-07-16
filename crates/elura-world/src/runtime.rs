@@ -50,6 +50,9 @@ impl WorldBuilder {
         self
     }
 
+    /// Registers a low-level route whose handler receives and returns raw payload bytes.
+    ///
+    /// Applications should normally implement [`Route`] and use [`Self::register`].
     pub fn register_raw(&mut self, route: u32, handler: impl WorldHandler) -> Result<&mut Self> {
         if route < FIRST_APPLICATION_ROUTE {
             return Err(Error::InvalidConfig(format!("route {route} is reserved")));
@@ -64,6 +67,9 @@ impl WorldBuilder {
     }
 
     /// Registers a typed Protobuf application route.
+    ///
+    /// Successful handler results become ELR2 response frames. Handler errors become ELR2 error
+    /// frames correlated with the original request ID.
     pub fn register<E, F, Fut>(&mut self, _route: E, handler: F) -> Result<&mut Self>
     where
         E: Route,
@@ -100,7 +106,16 @@ impl WorldBuilder {
         Ok(self)
     }
 
-    pub fn use_route_middleware(
+    pub fn use_route_middleware<E: Route>(
+        &mut self,
+        _route: E,
+        middleware: Arc<dyn WorldMiddleware>,
+    ) -> Result<&mut Self> {
+        self.use_route_middleware_raw(E::ID, middleware)
+    }
+
+    /// Adds middleware to a route registered through a raw route ID.
+    pub fn use_route_middleware_raw(
         &mut self,
         route: u32,
         middleware: Arc<dyn WorldMiddleware>,
@@ -112,20 +127,6 @@ impl WorldBuilder {
             .entry(route)
             .or_default()
             .push(middleware);
-        Ok(self)
-    }
-
-    pub fn register_raw_with_middleware(
-        &mut self,
-        route: u32,
-        handler: impl WorldHandler,
-        middleware: impl IntoIterator<Item = Arc<dyn WorldMiddleware>>,
-    ) -> Result<&mut Self> {
-        self.register_raw(route, handler)?;
-        self.route_middleware
-            .entry(route)
-            .or_default()
-            .extend(middleware);
         Ok(self)
     }
 
