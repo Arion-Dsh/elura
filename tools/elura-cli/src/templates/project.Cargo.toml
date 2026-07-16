@@ -1,6 +1,6 @@
 [package]
 name = "elura-game"
-version = "0.1.0"
+version = "{{ELURA_VERSION}}"
 edition = "2024"
 rust-version = "1.97"
 publish = false

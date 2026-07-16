@@ -904,6 +904,7 @@ mod tests {
 
         let manifest = fs::read_to_string(directory.0.join("Cargo.toml")).unwrap();
         assert!(manifest.contains("name = \"elura-game\""));
+        assert!(manifest.contains(&format!("version = \"{}\"", env!("CARGO_PKG_VERSION"))));
         assert!(manifest.contains(&format!(
             "elura = {{ version = \"{}\", features = [\"adapters\", \"monolith\"] }}",
             env!("CARGO_PKG_VERSION")
