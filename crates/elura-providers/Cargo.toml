@@ -11,6 +11,7 @@ documentation = "https://docs.rs/elura-providers"
 
 [features]
 default = []
+http-client = ["dep:reqwest", "dep:rustls"]
 full = [
     "identity",
     "notification-alisms",
@@ -23,7 +24,7 @@ full = [
     "payment-wechat-pay",
 ]
 identity = [
-    "dep:argon2", "dep:base64", "dep:hmac", "dep:rand", "dep:reqwest",
+    "dep:argon2", "dep:base64", "dep:hmac", "dep:rand", "http-client",
     "dep:sha2", "dep:subtle", "dep:tokio", "dep:url",
 ]
 notification-alisms = [
@@ -31,16 +32,15 @@ notification-alisms = [
 ]
 otp = ["identity", "dep:hex", "dep:tokio"]
 payment-alipay = [
-    "dep:base64", "dep:chrono", "dep:reqwest", "dep:rsa", "dep:rustls-pemfile",
-    "dep:sha2", "dep:url",
+    "dep:base64", "dep:chrono", "dep:pem-rfc7468", "dep:ring", "dep:url", "http-client",
 ]
 payment-apple = [
-    "dep:base64", "dep:chrono", "dep:p256", "dep:reqwest",
+    "dep:base64", "dep:chrono", "dep:p256", "http-client",
     "dep:sha2", "dep:x509-parser",
 ]
-payment-douyin = ["dep:hex", "dep:reqwest", "dep:sha1", "dep:subtle", "dep:tokio", "dep:url"]
+payment-douyin = ["dep:hex", "dep:sha1", "dep:subtle", "dep:tokio", "dep:url", "http-client"]
 payment-quicksdk = [
-    "dep:aes", "dep:base64", "dep:cbc", "dep:md-5", "dep:quick-xml",
+    "dep:aes", "dep:base64", "dep:cbc", "dep:hex", "dep:md-5", "dep:quick-xml",
     "dep:sha2", "dep:subtle", "dep:url",
 ]
 payment-wechat-mini = [
@@ -48,8 +48,8 @@ payment-wechat-mini = [
     "dep:sha2", "dep:subtle", "dep:tokio", "dep:url",
 ]
 payment-wechat-pay = [
-    "dep:aes-gcm", "dep:base64", "dep:chrono", "dep:hex", "dep:rand", "dep:reqwest", "dep:rsa",
-    "dep:sha2", "dep:url",
+    "dep:aes-gcm", "dep:base64", "dep:chrono", "dep:hex", "dep:pem-rfc7468", "dep:rand",
+    "dep:ring", "dep:url", "http-client",
 ]
 
 [package.metadata.docs.rs]
@@ -73,8 +73,9 @@ p256 = { workspace = true, optional = true }
 quick-xml = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
-rsa = { workspace = true, optional = true }
-rustls-pemfile = { workspace = true, optional = true }
+ring = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+pem-rfc7468 = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 sha1 = { workspace = true, optional = true }

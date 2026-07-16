@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -11,6 +11,7 @@ use elura_core::{Error, Result};
 use futures_util::StreamExt;
 use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{MicroTime, ObjectMeta};
+use k8s_openapi::jiff::Timestamp;
 use kube::runtime::watcher::{self, Event};
 use kube::{Api, Client, ResourceExt, api::PostParams};
 use tokio::sync::{Notify, watch};
@@ -224,7 +225,8 @@ pub fn assignments_from_leases<'a>(
         ) else {
             continue;
         };
-        if now >= renewed.0 + chrono::Duration::seconds(i64::from(duration)) {
+        let renewed = DateTime::<Utc>::from(SystemTime::from(renewed.0));
+        if now >= renewed + chrono::Duration::seconds(i64::from(duration)) {
             continue;
         }
         let candidate = Assignment {
@@ -238,10 +240,10 @@ pub fn assignments_from_leases<'a>(
             .get(&shard_id)
             .is_none_or(|(previous, previous_renewed)| {
                 candidate.epoch > previous.epoch
-                    || (candidate.epoch == previous.epoch && renewed.0 > *previous_renewed)
+                    || (candidate.epoch == previous.epoch && renewed > *previous_renewed)
             });
         if should_replace {
-            selected.insert(shard_id, (candidate, renewed.0));
+            selected.insert(shard_id, (candidate, renewed));
         }
     }
     let mut result: Vec<_> = selected.into_values().map(|value| value.0).collect();
@@ -366,7 +368,7 @@ impl OwnershipCoordinator {
             "{}{shard_id}",
             lease_prefix(self.config.region_id, self.config.realm_id)
         );
-        let now = MicroTime(Utc::now());
+        let now = MicroTime(Timestamp::now());
         let duration = self.config.lease_duration.as_secs() as i32;
         let existing = self.api.get_opt(&name).await.map_err(kube_error)?;
         let lease = if let Some(mut lease) = existing {
@@ -465,7 +467,9 @@ mod tests {
             spec: Some(LeaseSpec {
                 holder_identity: Some(owner.into()),
                 lease_duration_seconds: Some(30),
-                renew_time: Some(MicroTime(renewed)),
+                renew_time: Some(MicroTime(
+                    Timestamp::try_from(SystemTime::from(renewed)).unwrap(),
+                )),
                 lease_transitions: Some(epoch),
                 ..Default::default()
             }),

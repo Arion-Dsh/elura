@@ -1,20 +1,17 @@
 //! Alipay RSA2 checkout, query and notification verification.
 
 use std::collections::{BTreeMap, HashMap};
-use std::io::Cursor;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use chrono::Local;
-use rsa::pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey};
-use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
-use rsa::{Pkcs1v15Sign, RsaPrivateKey, RsaPublicKey};
+use ring::{rand::SystemRandom, rsa, signature};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
-use sha2::{Digest, Sha256};
 
+use crate::payment::rsa_signature::{parse_private_key, parse_public_key as parse_rsa_public_key};
 use crate::payment::{
     CheckoutRequest, CheckoutResult, ClientPayload, Money, NotificationRequest, Payment,
     PaymentEvent, PaymentLookup, PaymentProvider, PaymentStatus,
@@ -74,8 +71,8 @@ impl AlipayConfig {
 
 pub struct AlipayPayment {
     app_id: String,
-    private_key: RsaPrivateKey,
-    public_key: RsaPublicKey,
+    private_key: rsa::KeyPair,
+    public_key: Vec<u8>,
     gateway: String,
     notify_url: Option<String>,
     client: reqwest::Client,
@@ -96,13 +93,9 @@ impl AlipayPayment {
                 "Alipay gateway must use HTTPS".into(),
             ));
         }
-        let private_key = RsaPrivateKey::from_pkcs8_pem(config.private_key_pem.trim())
-            .or_else(|_| RsaPrivateKey::from_pkcs1_pem(config.private_key_pem.trim()))
-            .map_err(|error| {
-                ProviderError::Config(format!("invalid Alipay private key: {error}"))
-            })?;
+        let private_key = parse_private_key(&config.private_key_pem, "Alipay")?;
         let public_key = parse_public_key(&config.alipay_public_key_pem)?;
-        let client = reqwest::Client::builder()
+        let client = crate::http_client::builder()
             .timeout(config.timeout)
             .redirect(reqwest::redirect::Policy::none())
             .build()
@@ -139,11 +132,15 @@ impl AlipayPayment {
 
     fn sign_parameters(&self, mut values: BTreeMap<String, String>) -> ProviderResult<String> {
         let canonical = canonical(&values);
-        let digest = Sha256::digest(canonical.as_bytes());
-        let signature = self
-            .private_key
-            .sign(Pkcs1v15Sign::new::<Sha256>(), &digest)
-            .map_err(|error| ProviderError::Config(error.to_string()))?;
+        let mut signature = vec![0; self.private_key.public().modulus_len()];
+        self.private_key
+            .sign(
+                &signature::RSA_PKCS1_SHA256,
+                &SystemRandom::new(),
+                canonical.as_bytes(),
+                &mut signature,
+            )
+            .map_err(|_| ProviderError::Config("Alipay RSA signing failed".into()))?;
         values.insert("sign".into(), STANDARD.encode(signature));
         Ok(form_encode(&values))
     }
@@ -152,12 +149,8 @@ impl AlipayPayment {
         let signature = STANDARD
             .decode(signature.trim())
             .map_err(|_| ProviderError::InvalidSignature)?;
-        self.public_key
-            .verify(
-                Pkcs1v15Sign::new::<Sha256>(),
-                &Sha256::digest(content),
-                &signature,
-            )
+        signature::UnparsedPublicKey::new(&signature::RSA_PKCS1_2048_8192_SHA256, &self.public_key)
+            .verify(content, &signature)
             .map_err(|_| ProviderError::InvalidSignature)
     }
 }
@@ -387,78 +380,8 @@ fn required<'a>(values: &'a HashMap<String, String>, key: &str) -> ProviderResul
         .ok_or_else(|| ProviderError::InvalidResponse(format!("missing Alipay {key}")))
 }
 
-fn parse_public_key(pem: &str) -> ProviderResult<RsaPublicKey> {
-    if let Ok(key) = RsaPublicKey::from_public_key_pem(pem.trim()) {
-        return Ok(key);
-    }
-    if let Ok(key) = RsaPublicKey::from_pkcs1_pem(pem.trim()) {
-        return Ok(key);
-    }
-    let mut reader = Cursor::new(pem.as_bytes());
-    while let Some(item) = rustls_pemfile::read_one(&mut reader)
-        .map_err(|error| ProviderError::Config(error.to_string()))?
-    {
-        if let rustls_pemfile::Item::X509Certificate(certificate) = item {
-            let spki = certificate_spki(certificate.as_ref())?;
-            return RsaPublicKey::from_public_key_der(spki)
-                .map_err(|error| ProviderError::Config(error.to_string()));
-        }
-    }
-    Err(ProviderError::Config(
-        "invalid Alipay public key or certificate".into(),
-    ))
-}
-
-fn certificate_spki(certificate: &[u8]) -> ProviderResult<&[u8]> {
-    let (_, outer_start, outer_end) = tlv(certificate, 0)?;
-    let (_, tbs_start, tbs_end) = tlv(certificate, outer_start)?;
-    let mut position = tbs_start;
-    if certificate.get(position) == Some(&0xa0) {
-        position = tlv(certificate, position)?.2;
-    }
-    for _ in 0..5 {
-        position = tlv(certificate, position)?.2;
-    }
-    let start = position;
-    let (tag, _, end) = tlv(certificate, position)?;
-    if tag != 0x30 || end > tbs_end || outer_end > certificate.len() {
-        return Err(ProviderError::Config("invalid certificate SPKI".into()));
-    }
-    Ok(&certificate[start..end])
-}
-
-fn tlv(data: &[u8], position: usize) -> ProviderResult<(u8, usize, usize)> {
-    let tag = *data
-        .get(position)
-        .ok_or_else(|| ProviderError::Config("invalid DER".into()))?;
-    let first = *data
-        .get(position + 1)
-        .ok_or_else(|| ProviderError::Config("invalid DER".into()))?;
-    let (length, header) = if first & 0x80 == 0 {
-        (usize::from(first), 2)
-    } else {
-        let count = usize::from(first & 0x7f);
-        if count == 0 || count > 4 {
-            return Err(ProviderError::Config("invalid DER length".into()));
-        }
-        let mut length = 0usize;
-        for byte in data
-            .get(position + 2..position + 2 + count)
-            .ok_or_else(|| ProviderError::Config("invalid DER length".into()))?
-        {
-            length = length
-                .checked_mul(256)
-                .and_then(|value| value.checked_add(usize::from(*byte)))
-                .ok_or_else(|| ProviderError::Config("DER length overflow".into()))?;
-        }
-        (length, 2 + count)
-    };
-    let start = position + header;
-    let end = start
-        .checked_add(length)
-        .filter(|end| *end <= data.len())
-        .ok_or_else(|| ProviderError::Config("invalid DER range".into()))?;
-    Ok((tag, start, end))
+fn parse_public_key(pem: &str) -> ProviderResult<Vec<u8>> {
+    parse_rsa_public_key(pem, "Alipay")
 }
 
 #[cfg(test)]

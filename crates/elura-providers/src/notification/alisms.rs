@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use chrono::{SecondsFormat, Utc};
-use hmac::{Hmac, Mac};
-use rand::RngCore;
+use hmac::{Hmac, KeyInit, Mac};
+use rand::Rng;
 use serde::Deserialize;
 use sha1::Sha1;
 
@@ -80,7 +80,7 @@ impl AliSmsSender {
                 "AliSMS requires HTTPS, AccessKey, sign name and templates".into(),
             ));
         }
-        let client = reqwest::Client::builder()
+        let client = crate::http_client::builder()
             .timeout(config.timeout)
             .redirect(reqwest::redirect::Policy::none())
             .build()

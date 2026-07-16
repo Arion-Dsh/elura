@@ -2,10 +2,10 @@ use std::fmt;
 use std::future::Future;
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
 use elura_core::{Error, Result};
 use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{MicroTime, ObjectMeta};
+use k8s_openapi::jiff::Timestamp;
 use kube::{Api, Client, api::PostParams};
 use tokio_util::sync::CancellationToken;
 
@@ -165,7 +165,7 @@ async fn acquire_or_renew(
     name: &str,
     config: &LeaderElectionConfig,
 ) -> Result<bool> {
-    let now = Utc::now();
+    let now = Timestamp::now();
     let duration = config.lease_duration.as_secs() as i32;
     let current = api.get_opt(name).await.map_err(kube_error)?;
     let lease = if let Some(mut lease) = current {
@@ -173,7 +173,7 @@ async fn acquire_or_renew(
         let held_by_self = spec.holder_identity.as_deref() == Some(&config.identity);
         let expired = spec.renew_time.as_ref().is_none_or(|renewed| {
             let seconds = spec.lease_duration_seconds.unwrap_or(duration).max(1);
-            now >= renewed.0 + chrono::Duration::seconds(i64::from(seconds))
+            now >= renewed.0 + Duration::from_secs(seconds as u64)
         });
         if !held_by_self && !expired {
             return Ok(false);
@@ -225,7 +225,7 @@ async fn release(api: &Api<Lease>, name: &str, identity: &str) -> Result<()> {
     }
     spec.holder_identity = Some(String::new());
     spec.lease_duration_seconds = Some(1);
-    spec.renew_time = Some(MicroTime(Utc::now()));
+    spec.renew_time = Some(MicroTime(Timestamp::now()));
     api.replace(name, &PostParams::default(), &lease)
         .await
         .map_err(kube_error)?;

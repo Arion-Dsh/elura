@@ -1,6 +1,6 @@
 use bytes::{BufMut, BytesMut};
 use elura_core::protocol::{FrameCodec, HEADER_LEN};
-use rand::{RngCore, SeedableRng, rngs::StdRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 use tokio_util::codec::Decoder;
 
 #[test]

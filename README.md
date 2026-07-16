@@ -67,7 +67,7 @@ Example feature selection:
 
 ```toml
 [dependencies]
-elura = { version = "0.2.1", features = ["monolith", "redis"] }
+elura = { version = "0.2.2", features = ["monolith", "redis"] }
 ```
 
 Applications may implement the public storage and transport contracts themselves; using

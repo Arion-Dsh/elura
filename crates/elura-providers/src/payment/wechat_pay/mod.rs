@@ -5,18 +5,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD};
-use rand::RngCore;
+use rand::Rng;
 use reqwest::{Method, Url, header::HeaderMap};
-use rsa::{
-    RsaPrivateKey, RsaPublicKey,
-    pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey},
-    pkcs1v15::{Signature, SigningKey, VerifyingKey},
-    pkcs8::{DecodePrivateKey, DecodePublicKey},
-    signature::{SignatureEncoding, Signer, Verifier},
-};
+use ring::{rand::SystemRandom, rsa, signature};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use sha2::Sha256;
 
+use super::rsa_signature::{parse_private_key, parse_public_key};
 use super::{
     CheckoutRequest, CheckoutResult, ClientPayload, Money, NotificationRequest, Payment,
     PaymentCapabilities, PaymentEvent, PaymentLookup, PaymentProvider, PaymentStatus,
@@ -96,8 +90,8 @@ pub struct WechatPayPayment {
     app_id: String,
     notify_url: String,
     public_key_id: String,
-    signing_key: SigningKey<Sha256>,
-    verifying_key: VerifyingKey<Sha256>,
+    signing_key: rsa::KeyPair,
+    verifying_key: Vec<u8>,
     base_url: Url,
     client: reqwest::Client,
 }
@@ -129,18 +123,14 @@ impl WechatPayPayment {
                 "incomplete WeChat Pay v3 configuration".into(),
             ));
         }
-        let private_key = RsaPrivateKey::from_pkcs8_pem(&config.private_key_pem)
-            .or_else(|_| RsaPrivateKey::from_pkcs1_pem(&config.private_key_pem))
-            .map_err(|_| ProviderError::Config("invalid merchant RSA private key".into()))?;
-        let public_key = RsaPublicKey::from_public_key_pem(&config.wechat_public_key_pem)
-            .or_else(|_| RsaPublicKey::from_pkcs1_pem(&config.wechat_public_key_pem))
-            .map_err(|_| ProviderError::Config("invalid WeChat RSA public key".into()))?;
+        let private_key = parse_private_key(&config.private_key_pem, "merchant")?;
+        let public_key = parse_public_key(&config.wechat_public_key_pem, "WeChat")?;
         let api_v3_key = config
             .api_v3_key
             .as_bytes()
             .try_into()
             .map_err(|_| ProviderError::Config("APIV3 key must be 32 bytes".into()))?;
-        let client = reqwest::Client::builder()
+        let client = crate::http_client::builder()
             .timeout(config.timeout)
             .redirect(reqwest::redirect::Policy::none())
             .build()
@@ -152,8 +142,8 @@ impl WechatPayPayment {
             app_id: config.app_id,
             notify_url: config.notify_url,
             public_key_id: config.wechat_public_key_id,
-            signing_key: SigningKey::new(private_key),
-            verifying_key: VerifyingKey::new(public_key),
+            signing_key: private_key,
+            verifying_key: public_key,
             base_url,
             client,
         })
@@ -172,12 +162,25 @@ impl WechatPayPayment {
         timestamp: u64,
         nonce: &str,
         body: &[u8],
-    ) -> String {
+    ) -> ProviderResult<String> {
         let message = format!(
             "{method}\n{path_and_query}\n{timestamp}\n{nonce}\n{}\n",
             String::from_utf8_lossy(body)
         );
-        STANDARD.encode(self.signing_key.sign(message.as_bytes()).to_bytes())
+        self.sign_message(message.as_bytes())
+    }
+
+    fn sign_message(&self, message: &[u8]) -> ProviderResult<String> {
+        let mut signed = vec![0; self.signing_key.public().modulus_len()];
+        self.signing_key
+            .sign(
+                &signature::RSA_PKCS1_SHA256,
+                &SystemRandom::new(),
+                message,
+                &mut signed,
+            )
+            .map_err(|_| ProviderError::Config("WeChat RSA signing failed".into()))?;
+        Ok(STANDARD.encode(signed))
     }
 
     async fn request<T: DeserializeOwned>(
@@ -189,7 +192,7 @@ impl WechatPayPayment {
         let timestamp = unix_seconds()?;
         let nonce = Self::nonce();
         let bytes = body.unwrap_or_default();
-        let signature = self.sign(method.as_str(), path_and_query, timestamp, &nonce, &bytes);
+        let signature = self.sign(method.as_str(), path_and_query, timestamp, &nonce, &bytes)?;
         let authorization = format!(
             "WECHATPAY2-SHA256-RSA2048 mchid=\"{}\",nonce_str=\"{}\",timestamp=\"{}\",serial_no=\"{}\",signature=\"{}\"",
             self.merchant_id, nonce, timestamp, self.serial_number, signature
@@ -248,12 +251,13 @@ impl WechatPayPayment {
         let signature = STANDARD
             .decode(signature)
             .map_err(|_| ProviderError::InvalidSignature)?;
-        let signature = Signature::try_from(signature.as_slice())
-            .map_err(|_| ProviderError::InvalidSignature)?;
         let message = format!("{timestamp}\n{nonce}\n{}\n", String::from_utf8_lossy(body));
-        self.verifying_key
-            .verify(message.as_bytes(), &signature)
-            .map_err(|_| ProviderError::InvalidSignature)
+        signature::UnparsedPublicKey::new(
+            &signature::RSA_PKCS1_2048_8192_SHA256,
+            &self.verifying_key,
+        )
+        .verify(message.as_bytes(), &signature)
+        .map_err(|_| ProviderError::InvalidSignature)
     }
 
     fn app_payload(&self, prepay_id: &str) -> ProviderResult<String> {
@@ -261,7 +265,7 @@ impl WechatPayPayment {
         let nonce = Self::nonce();
         let package = format!("Sign=WXPay&prepayid={prepay_id}");
         let message = format!("{}\n{timestamp}\n{nonce}\n{package}\n", self.app_id);
-        let signature = STANDARD.encode(self.signing_key.sign(message.as_bytes()).to_bytes());
+        let signature = self.sign_message(message.as_bytes())?;
         Ok(serde_json::json!({
             "appid": self.app_id, "partnerid": self.merchant_id, "prepayid": prepay_id,
             "package": "Sign=WXPay", "noncestr": nonce, "timestamp": timestamp.to_string(),
@@ -374,9 +378,11 @@ impl PaymentProvider for WechatPayPayment {
         let encrypted = STANDARD
             .decode(&envelope.resource.ciphertext)
             .map_err(|_| ProviderError::InvalidResponse("invalid ciphertext".into()))?;
+        let nonce = Nonce::try_from(envelope.resource.nonce.as_bytes())
+            .map_err(|_| ProviderError::InvalidResponse("invalid WeChat nonce".into()))?;
         let plain = cipher
             .decrypt(
-                Nonce::from_slice(envelope.resource.nonce.as_bytes()),
+                &nonce,
                 aes_gcm::aead::Payload {
                     msg: &encrypted,
                     aad: envelope.resource.associated_data.as_bytes(),

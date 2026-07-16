@@ -78,7 +78,7 @@ impl DouyinPayment {
         }
         validate_endpoint(&config.token_url)?;
         validate_endpoint(&config.query_url)?;
-        let client = reqwest::Client::builder()
+        let client = crate::http_client::builder()
             .timeout(config.timeout)
             .redirect(reqwest::redirect::Policy::none())
             .build()

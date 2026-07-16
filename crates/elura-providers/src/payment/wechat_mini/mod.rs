@@ -3,8 +3,8 @@
 use aes::Aes256;
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD};
-use cbc::cipher::{BlockDecryptMut, KeyIvInit, block_padding::NoPadding};
-use hmac::{Hmac, Mac};
+use cbc::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::NoPadding};
+use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use sha2::Sha256;
@@ -131,7 +131,7 @@ impl WechatMiniPayment {
         let iv = &key[..16];
         let plain = Aes256CbcDec::new_from_slices(&key, iv)
             .map_err(|_| ProviderError::InvalidSignature)?
-            .decrypt_padded_mut::<NoPadding>(&mut ciphertext)
+            .decrypt_padded::<NoPadding>(&mut ciphertext)
             .map_err(|_| ProviderError::InvalidSignature)?;
         let padding = plain
             .last()

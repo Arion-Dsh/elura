@@ -145,7 +145,7 @@ impl ApplePayment {
                 )
             })?;
         validate_trusted_roots(&config.trusted_roots_der)?;
-        let client = reqwest::Client::builder()
+        let client = crate::http_client::builder()
             .timeout(config.timeout)
             .redirect(reqwest::redirect::Policy::none())
             .build()

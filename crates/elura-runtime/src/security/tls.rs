@@ -8,6 +8,7 @@ use elura_core::{Error, Result};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::{ClientConfig, RootCertStore, ServerConfig, SignatureScheme};
+use rustls_pki_types::pem::PemObject;
 use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
@@ -269,8 +270,11 @@ fn load_roots(path: Option<impl AsRef<Path>>) -> Result<RootCertStore> {
 
 fn load_certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
     let file = File::open(path)?;
-    let certificates =
-        rustls_pemfile::certs(&mut BufReader::new(file)).collect::<io::Result<Vec<_>>>()?;
+    let certificates = CertificateDer::pem_reader_iter(BufReader::new(file))
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|error| {
+            Error::InvalidConfig(format!("invalid PEM file {}: {error}", path.display()))
+        })?;
     if certificates.is_empty() {
         return Err(Error::InvalidConfig(format!(
             "PEM file {} contains no certificates",
@@ -282,6 +286,7 @@ fn load_certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
 
 fn load_private_key(path: &Path) -> Result<PrivateKeyDer<'static>> {
     let file = File::open(path)?;
-    rustls_pemfile::private_key(&mut BufReader::new(file))?
-        .ok_or_else(|| Error::InvalidConfig(format!("PEM file {} contains no key", path.display())))
+    PrivateKeyDer::from_pem_reader(BufReader::new(file)).map_err(|error| {
+        Error::InvalidConfig(format!("invalid PEM key file {}: {error}", path.display()))
+    })
 }

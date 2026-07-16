@@ -8,6 +8,8 @@ mod apple;
 mod douyin;
 #[cfg(feature = "payment-quicksdk")]
 mod quicksdk;
+#[cfg(any(feature = "payment-alipay", feature = "payment-wechat-pay"))]
+mod rsa_signature;
 #[cfg(feature = "payment-wechat-mini")]
 mod wechat_mini;
 #[cfg(feature = "payment-wechat-pay")]

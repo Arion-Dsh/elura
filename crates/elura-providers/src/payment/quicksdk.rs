@@ -109,10 +109,7 @@ impl PaymentProvider for QuickSdkPayment {
             .get("md5Sign")
             .ok_or_else(|| ProviderError::InvalidResponse("missing md5Sign".into()))?;
         use sha2::Digest;
-        let expected = format!(
-            "{:x}",
-            md5::Md5::digest(format!("{data}{sign}{}", self.md5_key))
-        );
+        let expected = hex::encode(md5::Md5::digest(format!("{data}{sign}{}", self.md5_key)));
         if expected
             .to_lowercase()
             .as_bytes()
