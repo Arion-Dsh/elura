@@ -130,7 +130,7 @@ impl WechatPayPayment {
             .as_bytes()
             .try_into()
             .map_err(|_| ProviderError::Config("APIV3 key must be 32 bytes".into()))?;
-        let client = crate::http_client::builder()
+        let client = reqwest::Client::builder()
             .timeout(config.timeout)
             .redirect(reqwest::redirect::Policy::none())
             .build()

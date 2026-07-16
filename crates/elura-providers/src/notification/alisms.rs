@@ -80,7 +80,7 @@ impl AliSmsSender {
                 "AliSMS requires HTTPS, AccessKey, sign name and templates".into(),
             ));
         }
-        let client = crate::http_client::builder()
+        let client = reqwest::Client::builder()
             .timeout(config.timeout)
             .redirect(reqwest::redirect::Policy::none())
             .build()

@@ -366,7 +366,7 @@ fn require_https(value: &str) -> ProviderResult<()> {
 }
 
 fn secure_client() -> ProviderResult<reqwest::Client> {
-    crate::http_client::builder()
+    reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())
         .build()

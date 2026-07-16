@@ -95,7 +95,7 @@ impl AlipayPayment {
         }
         let private_key = parse_private_key(&config.private_key_pem, "Alipay")?;
         let public_key = parse_public_key(&config.alipay_public_key_pem)?;
-        let client = crate::http_client::builder()
+        let client = reqwest::Client::builder()
             .timeout(config.timeout)
             .redirect(reqwest::redirect::Policy::none())
             .build()

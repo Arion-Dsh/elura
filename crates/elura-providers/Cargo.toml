@@ -11,7 +11,6 @@ documentation = "https://docs.rs/elura-providers"
 
 [features]
 default = []
-http-client = ["dep:reqwest", "dep:rustls"]
 full = [
     "identity",
     "notification-alisms",
@@ -24,7 +23,7 @@ full = [
     "payment-wechat-pay",
 ]
 identity = [
-    "dep:argon2", "dep:base64", "dep:hmac", "dep:rand", "http-client",
+    "dep:argon2", "dep:base64", "dep:hmac", "dep:rand", "dep:reqwest",
     "dep:sha2", "dep:subtle", "dep:tokio", "dep:url",
 ]
 notification-alisms = [
@@ -32,13 +31,13 @@ notification-alisms = [
 ]
 otp = ["identity", "dep:hex", "dep:tokio"]
 payment-alipay = [
-    "dep:base64", "dep:chrono", "dep:pem-rfc7468", "dep:ring", "dep:url", "http-client",
+    "dep:base64", "dep:chrono", "dep:pem-rfc7468", "dep:reqwest", "dep:ring", "dep:url",
 ]
 payment-apple = [
-    "dep:base64", "dep:chrono", "dep:p256", "http-client",
+    "dep:base64", "dep:chrono", "dep:p256", "dep:reqwest",
     "dep:sha2", "dep:x509-parser",
 ]
-payment-douyin = ["dep:hex", "dep:sha1", "dep:subtle", "dep:tokio", "dep:url", "http-client"]
+payment-douyin = ["dep:hex", "dep:reqwest", "dep:sha1", "dep:subtle", "dep:tokio", "dep:url"]
 payment-quicksdk = [
     "dep:aes", "dep:base64", "dep:cbc", "dep:hex", "dep:md-5", "dep:quick-xml",
     "dep:sha2", "dep:subtle", "dep:url",
@@ -49,7 +48,7 @@ payment-wechat-mini = [
 ]
 payment-wechat-pay = [
     "dep:aes-gcm", "dep:base64", "dep:chrono", "dep:hex", "dep:pem-rfc7468", "dep:rand",
-    "dep:ring", "dep:url", "http-client",
+    "dep:reqwest", "dep:ring", "dep:url",
 ]
 
 [package.metadata.docs.rs]
@@ -74,7 +73,6 @@ quick-xml = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 ring = { workspace = true, optional = true }
-rustls = { workspace = true, optional = true }
 pem-rfc7468 = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true

@@ -42,7 +42,7 @@ impl PlatformIdentityConfig {
 }
 
 fn client(timeout: Duration) -> ProviderResult<reqwest::Client> {
-    crate::http_client::builder()
+    reqwest::Client::builder()
         .timeout(if timeout.is_zero() {
             Duration::from_secs(10)
         } else {
