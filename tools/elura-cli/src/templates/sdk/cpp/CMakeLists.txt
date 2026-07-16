@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(elura_protocol LANGUAGES CXX)
+project(elura_protocol VERSION {{ELURA_VERSION}} LANGUAGES CXX)
 
 add_library(elura_protocol src/elr2.cpp)
 target_include_directories(elura_protocol PUBLIC include)

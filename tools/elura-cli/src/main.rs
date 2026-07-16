@@ -1074,6 +1074,20 @@ mod tests {
         let cpp = fs::read_to_string(directory.0.join("sdk/cpp/include/elura/elr2.hpp")).unwrap();
         assert!(cpp.contains(&format!("kElr2Version = {}", elura_core::protocol::VERSION)));
         assert!(cpp.contains(elura_core::protocol::PROTOCOL_IDENTIFIER));
+
+        let version = env!("CARGO_PKG_VERSION");
+        let cpp_manifest = fs::read_to_string(directory.0.join("sdk/cpp/CMakeLists.txt")).unwrap();
+        let csharp_manifest = fs::read_to_string(
+            directory
+                .0
+                .join("sdk/csharp/Elura.Protocol/Elura.Protocol.csproj"),
+        )
+        .unwrap();
+        let typescript_manifest =
+            fs::read_to_string(directory.0.join("sdk/typescript/package.json")).unwrap();
+        assert!(cpp_manifest.contains(&format!("VERSION {version}")));
+        assert!(csharp_manifest.contains(&format!("<Version>{version}</Version>")));
+        assert!(typescript_manifest.contains(&format!("\"version\": \"{version}\"")));
     }
 
     #[test]
