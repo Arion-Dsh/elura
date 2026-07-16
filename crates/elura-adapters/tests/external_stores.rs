@@ -14,7 +14,7 @@ use elura_adapters::replay::RedisReplayStore;
 #[cfg(feature = "redis")]
 use elura_adapters::session_control::{RedisSessionControlBus, RedisSessionControlConfig};
 #[cfg(feature = "redis")]
-use elura_core::online::{OnlineDirectory, SessionLease};
+use elura_core::online::{OnlineDirectory, OnlineStats, OnlineStatsReader, SessionLease};
 #[cfg(any(feature = "redis", feature = "sql"))]
 use elura_core::outbox::{OutboxEvent, OutboxStore};
 #[cfg(feature = "redis")]
@@ -155,6 +155,13 @@ async fn redis_cluster_transport_keeps_multi_key_operations_in_one_slot_when_con
         .unwrap();
     assert_eq!(directory.user_sessions(1, 1, 2).await.unwrap().len(), 1);
     assert_eq!(directory.group_sessions("room:1").await.unwrap().len(), 1);
+    assert_eq!(
+        directory.stats(1, 1).await.unwrap(),
+        OnlineStats {
+            session_count: 1,
+            user_count: 1,
+        }
+    );
 
     let mut control_config = RedisSessionControlConfig::default();
     control_config.stream = format!("{prefix}:{{transport}}:session:control");
@@ -232,6 +239,70 @@ async fn redis_online_renewal_extends_single_session_claim() {
 
 #[tokio::test]
 #[cfg(feature = "redis")]
+async fn redis_online_stats_count_sessions_and_distinct_users() {
+    let Some(url) = configured_url("ELURA_TEST_REDIS_URL") else {
+        return;
+    };
+    let ttl = Duration::from_secs(30);
+    let directory = RedisOnlineDirectory::connect(
+        &url,
+        format!("elura-test-online-{}", uuid::Uuid::new_v4()),
+        ttl,
+    )
+    .await
+    .unwrap();
+    let first_id = uuid::Uuid::new_v4();
+    let leases = [
+        (first_id, 2, 1),
+        (uuid::Uuid::new_v4(), 2, 1),
+        (uuid::Uuid::new_v4(), 3, 1),
+        (uuid::Uuid::new_v4(), 4, 2),
+    ]
+    .into_iter()
+    .map(|(session_id, user_id, realm_id)| SessionLease {
+        session_id,
+        gateway_id: "gateway-1".into(),
+        identity: Identity {
+            account_id: user_id,
+            user_id,
+            region_id: 1,
+            realm_id,
+            generation: 1,
+        },
+        expires_at: SystemTime::now() + ttl,
+    })
+    .collect::<Vec<_>>();
+    for lease in leases {
+        directory.register(lease).await.unwrap();
+    }
+    let stats: &dyn OnlineStatsReader = &directory;
+
+    assert_eq!(
+        stats.stats(1, 1).await.unwrap(),
+        OnlineStats {
+            session_count: 3,
+            user_count: 2,
+        }
+    );
+    assert_eq!(
+        stats.stats(1, 2).await.unwrap(),
+        OnlineStats {
+            session_count: 1,
+            user_count: 1,
+        }
+    );
+    directory.remove(first_id).await.unwrap();
+    assert_eq!(
+        stats.stats(1, 1).await.unwrap(),
+        OnlineStats {
+            session_count: 2,
+            user_count: 2,
+        }
+    );
+}
+
+#[tokio::test]
+#[cfg(feature = "redis")]
 async fn redis_online_group_indexes_expire_with_the_session() {
     let Some(url) = configured_url("ELURA_TEST_REDIS_URL") else {
         return;
@@ -260,6 +331,7 @@ async fn redis_online_group_indexes_expire_with_the_session() {
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(directory.stats(1, 1).await.unwrap(), OnlineStats::default());
 
     let client = redis::Client::open(url).unwrap();
     let mut connection = client.get_connection_manager().await.unwrap();

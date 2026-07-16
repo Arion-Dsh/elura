@@ -719,6 +719,7 @@ mod tests {
                 "admin-test-auth",
                 "admin-test-gateway",
                 Duration::from_secs(60),
+                Duration::from_secs(1_800),
             )
             .unwrap(),
         );

@@ -78,9 +78,16 @@ struct Identity {
 };
 
 struct AuthenticateRequest { std::string ticket; };
-struct AuthenticateResponse { std::string session_id; Identity identity; };
-// A reconnect request payload must be empty or the UTF-8 bytes for `{}`.
-struct ReconnectTicketResponse { std::string ticket; };
+struct ReconnectTicketRequest { std::string ticket; };
+struct ReconnectTicketResponse {
+  std::string ticket;
+  std::uint64_t expires_in_seconds = 0;
+};
+struct AuthenticateResponse {
+  std::string session_id;
+  Identity identity;
+  ReconnectTicketResponse reconnect;
+};
 struct ErrorEnvelope { std::string code; std::string message; bool retryable = false; };
 
 void validate_identity(const Identity& identity);

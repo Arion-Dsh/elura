@@ -1,7 +1,8 @@
 use async_trait::async_trait;
-use elura_core::online::{OnlineDirectory, SessionLease};
+use elura_core::online::{OnlineDirectory, OnlineStats, OnlineStatsReader, SessionLease};
 use elura_core::{Error, Result};
 use elura_runtime::observability::ReadinessProbe;
+use std::collections::HashSet;
 use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
@@ -73,6 +74,13 @@ impl OnlineDirectory for RedisOnlineDirectory {
             .await
             .map_err(err)?;
         Ok(())
+    }
+}
+
+#[async_trait]
+impl OnlineStatsReader for RedisOnlineDirectory {
+    async fn stats(&self, region_id: u32, realm_id: u32) -> Result<OnlineStats> {
+        RedisOnlineDirectory::stats(self, region_id, realm_id).await
     }
 }
 
@@ -149,8 +157,12 @@ impl RedisOnlineDirectory {
             "single:{}:{}:{}",
             lease.identity.region_id, lease.identity.realm_id, lease.identity.user_id
         ));
+        let realm = self.key(&format!(
+            "realm:{}:{}",
+            lease.identity.region_id, lease.identity.realm_id
+        ));
         let script = redis::Script::new(
-            "redis.call('SET',KEYS[1],ARGV[1],'PX',ARGV[3]);redis.call('SADD',KEYS[2],ARGV[2]);redis.call('PEXPIRE',KEYS[2],ARGV[3]);if redis.call('GET',KEYS[3])==ARGV[2] then redis.call('PEXPIRE',KEYS[3],ARGV[3]) end;local groups=redis.call('SMEMBERS',KEYS[4]);if #groups>0 then redis.call('PEXPIRE',KEYS[4],ARGV[3]);for _,group in ipairs(groups) do redis.call('PEXPIRE',group,ARGV[3]) end end;return 1",
+            "redis.call('SET',KEYS[1],ARGV[1],'PX',ARGV[3]);redis.call('SADD',KEYS[2],ARGV[2]);redis.call('PEXPIRE',KEYS[2],ARGV[3]);if redis.call('GET',KEYS[3])==ARGV[2] then redis.call('PEXPIRE',KEYS[3],ARGV[3]) end;local groups=redis.call('SMEMBERS',KEYS[4]);if #groups>0 then redis.call('PEXPIRE',KEYS[4],ARGV[3]);for _,group in ipairs(groups) do redis.call('PEXPIRE',group,ARGV[3]) end end;redis.call('SADD',KEYS[5],ARGV[2]);redis.call('PEXPIRE',KEYS[5],ARGV[3]);return 1",
         );
         let mut c = self.connection.clone();
         script
@@ -158,6 +170,7 @@ impl RedisOnlineDirectory {
             .key(user)
             .key(single)
             .key(self.key(&format!("session-groups:{}", lease.session_id)))
+            .key(realm)
             .arg(payload)
             .arg(lease.session_id.to_string())
             .arg(self.ttl.as_millis())
@@ -202,6 +215,13 @@ impl RedisOnlineDirectory {
                 .arg(self.key(&format!(
                     "user:{}:{}:{}",
                     x.identity.region_id, x.identity.realm_id, x.identity.user_id
+                )))
+                .arg(id.to_string())
+                .ignore();
+            p.cmd("SREM")
+                .arg(self.key(&format!(
+                    "realm:{}:{}",
+                    x.identity.region_id, x.identity.realm_id
                 )))
                 .arg(id.to_string())
                 .ignore();
@@ -272,6 +292,23 @@ impl RedisOnlineDirectory {
     pub async fn user_sessions(&self, r: u32, m: u32, u: i64) -> Result<Vec<SessionLease>> {
         self.sessions_in(self.key(&format!("user:{r}:{m}:{u}")))
             .await
+    }
+    pub async fn stats(&self, region_id: u32, realm_id: u32) -> Result<OnlineStats> {
+        let sessions = self
+            .sessions_in(self.key(&format!("realm:{region_id}:{realm_id}")))
+            .await?;
+        let mut user_ids = HashSet::new();
+        let mut session_count = 0;
+        for lease in sessions {
+            if lease.identity.region_id == region_id && lease.identity.realm_id == realm_id {
+                session_count += 1;
+                user_ids.insert(lease.identity.user_id);
+            }
+        }
+        Ok(OnlineStats {
+            session_count,
+            user_count: user_ids.len() as u64,
+        })
     }
     pub async fn track(&self, id: Uuid, group: &str, join: bool) -> Result<()> {
         if group.is_empty() || group.len() > 256 {

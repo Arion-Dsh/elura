@@ -9,7 +9,7 @@ use elura_core::account_version::{AccountVersionKey, AccountVersionStore};
 use elura_core::online::{DuplicateLoginMode, MemoryOnlineDirectory};
 use elura_core::protocol::{
     FIRST_APPLICATION_ROUTE, Frame, FrameCodec, FrameKind, PROTOCOL_IDENTIFIER, ROUTE_AUTHENTICATE,
-    ROUTE_HEARTBEAT, ROUTE_SESSION_CONTROL, SessionControl, SessionControlAction,
+    ROUTE_HEARTBEAT, ROUTE_RECONNECT, ROUTE_SESSION_CONTROL, SessionControl, SessionControlAction,
 };
 use elura_core::session::{
     Identity, SessionControlEvent, SessionControlHandler, SessionControlKind,
@@ -88,11 +88,12 @@ async fn monolith_routes_gateway_requests_without_world_tcp() {
         key,
         gateway.ticket.issuer.clone(),
         gateway.ticket.audience.clone(),
-        gateway.ticket.ttl,
+        gateway.ticket.login_ttl,
+        gateway.ticket.reconnect_ttl,
     )
     .unwrap();
     let ticket = tickets
-        .issue(Identity {
+        .issue_login(Identity {
             account_id: 1,
             user_id: 2,
             region_id: 1,
@@ -156,6 +157,7 @@ async fn gateway_readiness_includes_required_dependencies() {
             "test-auth",
             "test-gateway",
             Duration::from_secs(60),
+            Duration::from_secs(1_800),
         )
         .unwrap(),
     );
@@ -266,11 +268,12 @@ async fn gateway_drain_allows_an_inflight_request_to_finish() {
             "test-auth",
             "test-gateway",
             Duration::from_secs(60),
+            Duration::from_secs(1_800),
         )
         .unwrap(),
     );
     let ticket = tickets
-        .issue(Identity {
+        .issue_login(Identity {
             account_id: 1,
             user_id: 2,
             region_id: 1,
@@ -351,11 +354,12 @@ async fn gateway_drain_deadline_forces_remaining_sessions() {
             "test-auth",
             "test-gateway",
             Duration::from_secs(60),
+            Duration::from_secs(1_800),
         )
         .unwrap(),
     );
     let ticket = tickets
-        .issue(Identity {
+        .issue_login(Identity {
             account_id: 1,
             user_id: 2,
             region_id: 1,
@@ -437,11 +441,12 @@ async fn stale_ticket_is_rejected_by_authoritative_account_version() {
             "test-auth",
             "test-gateway",
             Duration::from_secs(60),
+            Duration::from_secs(1_800),
         )
         .unwrap(),
     );
     let ticket = tickets
-        .issue(Identity {
+        .issue_login(Identity {
             account_id: 1,
             user_id: 2,
             region_id: 3,
@@ -503,6 +508,7 @@ async fn periodic_account_version_check_disconnects_a_stale_session() {
             "test-auth",
             "test-gateway",
             Duration::from_secs(60),
+            Duration::from_secs(1_800),
         )
         .unwrap(),
     );
@@ -513,7 +519,7 @@ async fn periodic_account_version_check_disconnects_a_stale_session() {
         realm_id: 2,
         generation: 1,
     };
-    let ticket = tickets.issue(identity).unwrap();
+    let ticket = tickets.issue_login(identity).unwrap();
     let versions = Arc::new(AtomicVersionStore::new(1));
     let gateway = Gateway::new(
         GatewayConfig::default(),
@@ -586,6 +592,7 @@ async fn local_account_version_revocation_targets_only_older_sessions() {
             "test-auth",
             "test-gateway",
             Duration::from_secs(60),
+            Duration::from_secs(1_800),
         )
         .unwrap(),
     );
@@ -596,9 +603,9 @@ async fn local_account_version_revocation_targets_only_older_sessions() {
         realm_id: 2,
         generation: 1,
     };
-    let ticket = tickets.issue(identity.clone()).unwrap();
+    let ticket = tickets.issue_login(identity.clone()).unwrap();
     let newer_ticket = tickets
-        .issue(Identity {
+        .issue_login(Identity {
             generation: 2,
             ..identity.clone()
         })
@@ -724,6 +731,7 @@ async fn session_observers_receive_isolated_ordered_lifecycle_events() {
             "test-auth",
             "test-gateway",
             Duration::from_secs(60),
+            Duration::from_secs(1_800),
         )
         .unwrap(),
     );
@@ -734,7 +742,7 @@ async fn session_observers_receive_isolated_ordered_lifecycle_events() {
         realm_id: 2,
         generation: 3,
     };
-    let ticket = tickets.issue(identity.clone()).unwrap();
+    let ticket = tickets.issue_login(identity.clone()).unwrap();
     let observed = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
     let sink = observed.clone();
     let gateway = Gateway::new(
@@ -813,11 +821,12 @@ async fn proxy_protocol_source_reaches_gateway_admission() {
             "test-auth",
             "test-gateway",
             Duration::from_secs(60),
+            Duration::from_secs(1_800),
         )
         .unwrap(),
     );
     let ticket = tickets
-        .issue(Identity {
+        .issue_login(Identity {
             account_id: 1,
             user_id: 2,
             region_id: 3,
@@ -884,11 +893,12 @@ async fn admission_checks_connection_and_authenticated_identity() {
             "test-auth",
             "test-gateway",
             Duration::from_secs(60),
+            Duration::from_secs(1_800),
         )
         .unwrap(),
     );
     let ticket = tickets
-        .issue(Identity {
+        .issue_login(Identity {
             account_id: 1,
             user_id: 2,
             region_id: 3,
@@ -960,6 +970,7 @@ async fn websocket_uses_the_gateway_session_engine() {
             "test-auth",
             "test-gateway",
             Duration::from_secs(60),
+            Duration::from_secs(1_800),
         )
         .unwrap(),
     );
@@ -970,7 +981,7 @@ async fn websocket_uses_the_gateway_session_engine() {
         realm_id: 1,
         generation: 1,
     };
-    let ticket = tickets.issue(identity.clone()).unwrap();
+    let ticket = tickets.issue_login(identity.clone()).unwrap();
     let mut websocket_config = WebSocketConfig::default();
     websocket_config.listen = websocket_address;
     websocket_config.allowed_origins = vec!["https://game.example.com".into()];
@@ -1101,6 +1112,7 @@ async fn ticket_gateway_world_round_trip() {
             "test-auth",
             "test-gateway",
             Duration::from_secs(60),
+            Duration::from_secs(1_800),
         )
         .unwrap(),
     );
@@ -1111,8 +1123,7 @@ async fn ticket_gateway_world_round_trip() {
         realm_id: 2,
         generation: 1,
     };
-    let ticket = tickets.issue(identity.clone()).unwrap();
-    let second_ticket = tickets.issue(identity.clone()).unwrap();
+    let ticket = tickets.issue_login(identity.clone()).unwrap();
     let config = GatewayConfig::default();
     let gateway = Gateway::new(
         config.clone(),
@@ -1160,9 +1171,31 @@ async fn ticket_gateway_world_round_trip() {
     assert_eq!(authentication.kind, FrameKind::Response);
     let authenticated: serde_json::Value = serde_json::from_slice(&authentication.payload).unwrap();
     assert_eq!(authenticated["identity"]["user_id"], identity.user_id);
+    assert_eq!(authenticated["reconnect"]["expires_in_seconds"], 1_800);
+    let reconnect_ticket = authenticated["reconnect"]["ticket"]
+        .as_str()
+        .unwrap()
+        .to_owned();
 
     protocol
-        .send(Frame::request(100, 2, Bytes::from_static(b"hello")).unwrap())
+        .send(
+            Frame::request(
+                ROUTE_RECONNECT,
+                2,
+                serde_json::to_vec(&serde_json::json!({ "ticket": reconnect_ticket })).unwrap(),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let renewal = protocol.next().await.unwrap().unwrap();
+    assert_eq!(renewal.kind, FrameKind::Response);
+    let renewal: serde_json::Value = serde_json::from_slice(&renewal.payload).unwrap();
+    assert_eq!(renewal["expires_in_seconds"], 1_800);
+    let reconnect_ticket = renewal["ticket"].as_str().unwrap().to_owned();
+
+    protocol
+        .send(Frame::request(100, 3, Bytes::from_static(b"hello")).unwrap())
         .await
         .unwrap();
     let response = protocol.next().await.unwrap().unwrap();
@@ -1170,7 +1203,7 @@ async fn ticket_gateway_world_round_trip() {
     assert_eq!(response.payload, Bytes::from_static(b"hello"));
 
     protocol
-        .send(Frame::request(101, 3, Bytes::new()).unwrap())
+        .send(Frame::request(101, 4, Bytes::new()).unwrap())
         .await
         .unwrap();
     let response = protocol.next().await.unwrap().unwrap();
@@ -1203,7 +1236,7 @@ async fn ticket_gateway_world_round_trip() {
             Frame::request(
                 ROUTE_AUTHENTICATE,
                 1,
-                serde_json::to_vec(&serde_json::json!({ "ticket": second_ticket })).unwrap(),
+                serde_json::to_vec(&serde_json::json!({ "ticket": reconnect_ticket })).unwrap(),
             )
             .unwrap(),
         )
@@ -1240,6 +1273,7 @@ async fn unauthenticated_connection_is_closed_at_authentication_deadline() {
             "test-auth",
             "test-gateway",
             Duration::from_secs(60),
+            Duration::from_secs(1_800),
         )
         .unwrap(),
     );
@@ -1281,11 +1315,12 @@ async fn duplicate_request_returns_cached_response_without_reexecution() {
             "test-auth",
             "test-gateway",
             Duration::from_secs(60),
+            Duration::from_secs(1_800),
         )
         .unwrap(),
     );
     let ticket = tickets
-        .issue(Identity {
+        .issue_login(Identity {
             account_id: 1,
             user_id: 2,
             region_id: 1,
@@ -1364,11 +1399,12 @@ async fn route_rate_limit_disconnects_after_repeated_violations() {
             "test-auth",
             "test-gateway",
             Duration::from_secs(60),
+            Duration::from_secs(1_800),
         )
         .unwrap(),
     );
     let ticket = tickets
-        .issue(Identity {
+        .issue_login(Identity {
             account_id: 1,
             user_id: 2,
             region_id: 1,
@@ -1461,11 +1497,12 @@ async fn reserved_client_routes_disconnect_after_repeated_protocol_violations() 
             "test-auth",
             "test-gateway",
             Duration::from_secs(60),
+            Duration::from_secs(1_800),
         )
         .unwrap(),
     );
     let ticket = tickets
-        .issue(Identity {
+        .issue_login(Identity {
             account_id: 1,
             user_id: 2,
             region_id: 1,
@@ -1535,11 +1572,12 @@ async fn server_heartbeat_accepts_response_and_keeps_session_usable() {
             "test-auth",
             "test-gateway",
             Duration::from_secs(60),
+            Duration::from_secs(1_800),
         )
         .unwrap(),
     );
     let ticket = tickets
-        .issue(Identity {
+        .issue_login(Identity {
             account_id: 1,
             user_id: 2,
             region_id: 1,
@@ -1614,6 +1652,7 @@ async fn gateway_publishes_login_and_force_logout_session_control_events() {
             "test-auth",
             "test-gateway",
             Duration::from_secs(60),
+            Duration::from_secs(1_800),
         )
         .unwrap(),
     );
@@ -1624,7 +1663,7 @@ async fn gateway_publishes_login_and_force_logout_session_control_events() {
         realm_id: 2,
         generation: 3,
     };
-    let ticket = tickets.issue(identity.clone()).unwrap();
+    let ticket = tickets.issue_login(identity.clone()).unwrap();
     let control = Arc::new(RecordingSessionControl::default());
     let gateway = Arc::new(
         Gateway::new(

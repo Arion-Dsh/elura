@@ -22,8 +22,13 @@ export interface Identity {
 }
 
 export interface AuthenticateRequest { ticket: string }
-export interface AuthenticateResponse { session_id: string; identity: Identity }
-export interface ReconnectTicketResponse { ticket: string }
+export interface ReconnectTicketRequest { ticket: string }
+export interface ReconnectTicketResponse { ticket: string; expires_in_seconds: number }
+export interface AuthenticateResponse {
+  session_id: string;
+  identity: Identity;
+  reconnect: ReconnectTicketResponse;
+}
 export interface ErrorEnvelope { code: string; message: string; retryable: boolean }
 
 const utf8 = new TextEncoder();
@@ -78,17 +83,29 @@ export function decodeAuthenticateResponse(payload: Uint8Array): AuthenticateRes
       realm_id: positiveU32(identity.realm_id, "realm_id"),
       generation: safeInteger(identity.generation, "generation", true),
     },
+    reconnect: reconnectTicket(value.reconnect),
   };
 }
 
-// The Gateway accepts an empty reconnect payload or exactly the UTF-8 bytes for `{}`.
-export function encodeReconnectRequest(): Uint8Array {
-  return new Uint8Array();
+// Renewal consumes the current reconnect ticket before returning its replacement.
+export function encodeReconnectRequest(ticket: string): Uint8Array {
+  return utf8.encode(JSON.stringify({ ticket } satisfies ReconnectTicketRequest));
 }
 
 export function decodeReconnectResponse(payload: Uint8Array): ReconnectTicketResponse {
-  const value = object(parseJson(payload, "reconnect response"), "reconnect response");
-  return { ticket: stringField(value.ticket, "ticket") };
+  return reconnectTicket(parseJson(payload, "reconnect response"));
+}
+
+function reconnectTicket(value: unknown): ReconnectTicketResponse {
+  const ticket = object(value, "reconnect ticket");
+  return {
+    ticket: stringField(ticket.ticket, "ticket"),
+    expires_in_seconds: safeInteger(
+      ticket.expires_in_seconds,
+      "expires_in_seconds",
+      true,
+    ),
+  };
 }
 
 export function decodeErrorEnvelope(payload: Uint8Array): ErrorEnvelope {

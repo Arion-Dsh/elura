@@ -186,6 +186,7 @@ async fn main() -> AnyResult<()> {
         config.issuer.as_ref(),
         config.audience.as_ref(),
         Duration::from_secs(300),
+        Duration::from_secs(1_800),
     )?);
     let started = Instant::now();
     let start_barrier = Arc::new(Barrier::new(config.connections + 1));
@@ -278,7 +279,7 @@ async fn prepare_worker(
         Some(user_id) => user_id,
         None => return (result, None),
     };
-    let ticket = match tickets.issue(Identity {
+    let ticket = match tickets.issue_login(Identity {
         account_id: user_id,
         user_id,
         region_id: config.region_id,

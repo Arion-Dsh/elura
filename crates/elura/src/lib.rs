@@ -31,7 +31,9 @@ pub mod prelude {
         AccountVersionKey, AccountVersionStore, MutableAccountVersionStore,
     };
     #[cfg(feature = "core")]
-    pub use elura_core::online::{DuplicateLoginMode, OnlineDirectory};
+    pub use elura_core::online::{
+        DuplicateLoginMode, OnlineBackend, OnlineDirectory, OnlineStats, OnlineStatsReader,
+    };
     #[cfg(feature = "core")]
     pub use elura_core::otp::OtpStore;
     #[cfg(feature = "core")]
@@ -47,7 +49,7 @@ pub mod prelude {
         Identity, PlayerKey, SessionControlHandler, SessionControlTransport,
     };
     #[cfg(feature = "core")]
-    pub use elura_core::ticket::{ReplayStore, TicketService};
+    pub use elura_core::ticket::{ReplayStore, TicketPurpose, TicketService};
 
     #[cfg(feature = "core")]
     pub use crate::discovery::{
@@ -59,9 +61,9 @@ pub mod prelude {
     pub use crate::gateway::{
         Gateway, GatewayConfig, GatewayInterceptContext, GatewayInterceptor, GatewayNext,
         GatewayRealmAdmissionConfig, GatewayRequest, GatewayResponse, GatewayServer,
-        GatewayStatsSnapshot, GatewayTicketConfig, GatewayWorldTlsConfig, ReconnectTicketResponse,
-        RouteRateLimit, TcpWorldClient, WorldClient, WorldRequest, WorldRouteTarget,
-        WorldRouteUpdater,
+        GatewayStatsSnapshot, GatewayTicketConfig, GatewayWorldTlsConfig, ReconnectTicketRequest,
+        ReconnectTicketResponse, RouteRateLimit, TcpWorldClient, WorldClient, WorldRequest,
+        WorldRouteTarget, WorldRouteUpdater,
     };
     #[cfg(feature = "runtime")]
     pub use crate::launch::ServerTlsFilesConfig;

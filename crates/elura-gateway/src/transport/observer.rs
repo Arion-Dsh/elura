@@ -7,15 +7,22 @@ use tracing::warn;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
+/// An in-process Session lifecycle transition.
 pub enum SessionEventKind {
+    /// The transport connection was accepted but is not authenticated yet.
     Connected,
+    /// The Session successfully authenticated and its online lease was registered.
     Authenticated,
+    /// The Session ended. Its identity remains available if it authenticated.
     Closed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// An immutable snapshot captured at a Session lifecycle transition.
 pub struct SessionEvent {
+    /// The lifecycle transition that produced this event.
     pub kind: SessionEventKind,
+    /// Session state at the time of the transition.
     pub session: SessionSnapshot,
 }
 
@@ -23,6 +30,10 @@ pub struct SessionEvent {
 ///
 /// Observers execute outside Session locks and must return quickly. Failures
 /// are logged and isolated from the connection and from other observers.
+/// Notifications are process-local and best effort: abrupt Gateway process
+/// termination cannot produce a `Closed` event. Applications that project
+/// durable online state should enqueue events here and reconcile that state
+/// against [`elura_core::online::OnlineDirectory`] lease expiry.
 pub trait SessionObserver: Send + Sync + 'static {
     fn observe(&self, event: SessionEvent) -> Result<()>;
 }

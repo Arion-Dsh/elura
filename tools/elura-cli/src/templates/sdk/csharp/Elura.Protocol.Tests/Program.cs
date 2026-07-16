@@ -27,6 +27,9 @@ AssertThrows(() => Elr2Codec.Decode(wrongVersion), "wire-version mismatch");
 
 var auth = GatewayPayloadCodec.EncodeAuthenticateRequest("ticket-value");
 Assert(Encoding.UTF8.GetString(auth) == "{\"ticket\":\"ticket-value\"}", "authentication JSON");
+var reconnect = GatewayPayloadCodec.EncodeReconnectRequest("reconnect-value");
+Assert(Encoding.UTF8.GetString(reconnect) == "{\"ticket\":\"reconnect-value\"}",
+    "reconnect renewal JSON");
 
 var control = new SessionControl(SessionControlAction.AccountVersionChanged, "credentials rotated");
 var controlBytes = SessionControlCodec.Encode(control);

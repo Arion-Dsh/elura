@@ -7,6 +7,7 @@ import {
   decodeSessionControl,
   encodeAuthenticateRequest,
   encodeFrame,
+  encodeReconnectRequest,
   encodeSessionControl,
 } from "../src/index.js";
 
@@ -53,6 +54,11 @@ assert(
   new TextDecoder().decode(encodeAuthenticateRequest("ticket-value")) ===
     "{\"ticket\":\"ticket-value\"}",
   "authentication JSON",
+);
+assert(
+  new TextDecoder().decode(encodeReconnectRequest("reconnect-value")) ===
+    "{\"ticket\":\"reconnect-value\"}",
+  "reconnect renewal JSON",
 );
 const control = { action: SessionControlAction.AccountVersionChanged, reason: "credentials rotated" };
 const encodedControl = encodeSessionControl(control);

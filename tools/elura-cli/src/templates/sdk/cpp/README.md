@@ -20,3 +20,7 @@ Transport integration is intentionally outside this package:
 - Authentication, reconnect, responses, and errors use the JSON field names documented by the
   model structs in `elr2.hpp`. Use the JSON library already selected by your client application.
 - `proto/session_control.proto` is included for projects that prefer generated protobuf types.
+
+Every successful authentication response contains a reconnect ticket. Retain only the latest
+ticket, renew it before `expires_in_seconds` through the reconnect route, and replace it with the
+ticket returned by that response. The renewal request consumes the previous ticket.

@@ -80,7 +80,7 @@ async fn main() -> AnyResult<()> {
     config.ticket.key = ticket_key;
     config.ticket.issuer = "auth".into();
     config.ticket.audience = "gateway".into();
-    config.ticket.ttl = Duration::from_secs(300);
+    config.ticket.login_ttl = Duration::from_secs(300);
     let mut tcp_config = TcpConfig::default();
     tcp_config.listen = listen;
     let tcp = TcpTransport::new(tcp_config)?;

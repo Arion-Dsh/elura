@@ -35,7 +35,10 @@ pub struct GatewayTicketConfig {
     pub key: String,
     pub issuer: String,
     pub audience: String,
-    pub ttl: Duration,
+    /// Lifetime of application-login tickets.
+    pub login_ttl: Duration,
+    /// Lifetime of rotating tickets used for silent reconnects.
+    pub reconnect_ttl: Duration,
 }
 
 impl Default for GatewayTicketConfig {
@@ -44,7 +47,8 @@ impl Default for GatewayTicketConfig {
             key: String::new(),
             issuer: "game-login".into(),
             audience: "game-gateway".into(),
-            ttl: Duration::from_secs(60),
+            login_ttl: Duration::from_secs(60),
+            reconnect_ttl: Duration::from_secs(30 * 60),
         }
     }
 }
@@ -444,7 +448,8 @@ impl GatewayBuilder {
             config.ticket.key.clone(),
             config.ticket.issuer.clone(),
             config.ticket.audience.clone(),
-            config.ticket.ttl,
+            config.ticket.login_ttl,
+            config.ticket.reconnect_ttl,
         )?);
         let world_tls = config
             .world_tls

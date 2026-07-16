@@ -18,6 +18,18 @@ pub struct SessionLease {
     pub expires_at: SystemTime,
 }
 
+/// Point-in-time online totals for one region and realm.
+///
+/// `session_count` counts authenticated client sessions, while `user_count`
+/// deduplicates those sessions by player user ID.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OnlineStats {
+    /// Number of live authenticated sessions.
+    pub session_count: u64,
+    /// Number of distinct player user IDs across the live sessions.
+    pub user_count: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -51,6 +63,26 @@ pub trait OnlineDirectory: Send + Sync {
     async fn claim_single(&self, lease: &SessionLease, replace: bool) -> Result<Option<Uuid>>;
     async fn release_single(&self, lease: &SessionLease) -> Result<()>;
 }
+
+#[async_trait]
+/// Optional online-presence statistics contract.
+///
+/// Keeping aggregate queries separate from [`OnlineDirectory`] lets custom
+/// directory implementations opt into statistics without making session
+/// lifecycle and routing depend on a particular aggregation strategy.
+pub trait OnlineStatsReader: Send + Sync {
+    /// Returns live session and distinct-user totals for a region and realm.
+    async fn stats(&self, region_id: u32, realm_id: u32) -> Result<OnlineStats>;
+}
+
+/// Complete online-presence backend capability.
+///
+/// This convenience trait is implemented automatically by every type that
+/// provides both [`OnlineDirectory`] and [`OnlineStatsReader`]. APIs that need
+/// only one capability should continue to depend on the narrower trait.
+pub trait OnlineBackend: OnlineDirectory + OnlineStatsReader {}
+
+impl<T> OnlineBackend for T where T: OnlineDirectory + OnlineStatsReader {}
 
 /// Adapts any [`OnlineDirectory`] into provider-neutral Push target routing.
 /// Topic membership updates and target lookup therefore share the same online
@@ -254,6 +286,27 @@ impl OnlineDirectory for MemoryOnlineDirectory {
     }
 }
 
+#[async_trait]
+impl OnlineStatsReader for MemoryOnlineDirectory {
+    async fn stats(&self, region_id: u32, realm_id: u32) -> Result<OnlineStats> {
+        let mut state = self.lock()?;
+        Self::purge(&mut state);
+        let sessions = state.sessions.values().filter(|lease| {
+            lease.identity.region_id == region_id && lease.identity.realm_id == realm_id
+        });
+        let mut user_ids = HashSet::new();
+        let mut session_count = 0;
+        for lease in sessions {
+            session_count += 1;
+            user_ids.insert(lease.identity.user_id);
+        }
+        Ok(OnlineStats {
+            session_count,
+            user_count: user_ids.len() as u64,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -343,6 +396,68 @@ mod tests {
         assert_eq!(
             resolver.resolve_gateways(&topic).await.unwrap(),
             vec!["gateway-a"]
+        );
+    }
+
+    #[tokio::test]
+    async fn reports_session_and_distinct_user_counts_by_realm() {
+        let directory = MemoryOnlineDirectory::default();
+        let first = lease(Uuid::new_v4());
+        let mut second = lease(Uuid::new_v4());
+        second.gateway_id = "gateway-b".into();
+        let mut third = lease(Uuid::new_v4());
+        third.identity.user_id = 3;
+        let mut other_realm = lease(Uuid::new_v4());
+        other_realm.identity.realm_id = 5;
+        let mut expired = lease(Uuid::new_v4());
+        expired.identity.user_id = 4;
+        expired.expires_at = SystemTime::now() - Duration::from_secs(1);
+
+        for lease in [first, second, third, other_realm, expired] {
+            directory.register(lease).await.unwrap();
+        }
+        let stats: &dyn OnlineStatsReader = &directory;
+
+        assert_eq!(
+            stats.stats(3, 4).await.unwrap(),
+            OnlineStats {
+                session_count: 3,
+                user_count: 2,
+            }
+        );
+        assert_eq!(
+            stats.stats(3, 5).await.unwrap(),
+            OnlineStats {
+                session_count: 1,
+                user_count: 1,
+            }
+        );
+        assert_eq!(stats.stats(9, 9).await.unwrap(), OnlineStats::default());
+    }
+
+    #[tokio::test]
+    async fn complete_backend_exposes_directory_and_statistics_capabilities() {
+        let backend: Arc<dyn OnlineBackend> = Arc::new(MemoryOnlineDirectory::default());
+        let directory: Arc<dyn OnlineDirectory> = backend.clone();
+        let stats: Arc<dyn OnlineStatsReader> = backend;
+        let lease = lease(Uuid::new_v4());
+
+        directory.register(lease.clone()).await.unwrap();
+
+        assert_eq!(
+            directory
+                .session(lease.session_id)
+                .await
+                .unwrap()
+                .map(|registered| registered.session_id),
+            Some(lease.session_id)
+        );
+        assert_eq!(
+            stats.stats(3, 4).await.unwrap(),
+            OnlineStats {
+                session_count: 1,
+                user_count: 1,
+            }
         );
     }
 }

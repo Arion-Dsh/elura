@@ -25,10 +25,15 @@ public sealed record AuthenticateRequest(
 
 public sealed record AuthenticateResponse(
     [property: JsonPropertyName("session_id")] string SessionId,
-    [property: JsonPropertyName("identity")] Identity Identity);
+    [property: JsonPropertyName("identity")] Identity Identity,
+    [property: JsonPropertyName("reconnect")] ReconnectTicketResponse Reconnect);
+
+public sealed record ReconnectTicketRequest(
+    [property: JsonPropertyName("ticket")] string Ticket);
 
 public sealed record ReconnectTicketResponse(
-    [property: JsonPropertyName("ticket")] string Ticket);
+    [property: JsonPropertyName("ticket")] string Ticket,
+    [property: JsonPropertyName("expires_in_seconds")] ulong ExpiresInSeconds);
 
 public sealed record ErrorEnvelope(
     [property: JsonPropertyName("code")] string Code,
@@ -50,12 +55,14 @@ public static class GatewayPayloadCodec
             JsonSerializer.Deserialize<AuthenticateResponse>(payload, JsonOptions)
             ?? throw new Elr2ProtocolException("invalid authentication response"));
 
-    // The Gateway accepts either an empty reconnect payload or exactly `{}`.
-    public static byte[] EncodeReconnectRequest() => [];
+    // Renewal consumes the current reconnect ticket before returning its replacement.
+    public static byte[] EncodeReconnectRequest(string ticket) =>
+        JsonSerializer.SerializeToUtf8Bytes(new ReconnectTicketRequest(ticket), JsonOptions);
 
     public static ReconnectTicketResponse DecodeReconnectResponse(ReadOnlySpan<byte> payload) =>
-        JsonSerializer.Deserialize<ReconnectTicketResponse>(payload, JsonOptions)
-        ?? throw new Elr2ProtocolException("invalid reconnect response");
+        ValidateReconnectTicket(
+            JsonSerializer.Deserialize<ReconnectTicketResponse>(payload, JsonOptions)
+            ?? throw new Elr2ProtocolException("invalid reconnect response"));
 
     public static ErrorEnvelope DecodeError(ReadOnlySpan<byte> payload)
     {
@@ -75,6 +82,14 @@ public static class GatewayPayloadCodec
         if (string.IsNullOrEmpty(response.SessionId) || identity.AccountId <= 0 || identity.UserId <= 0 ||
             identity.RegionId == 0 || identity.RealmId == 0 || identity.Generation == 0)
             throw new Elr2ProtocolException("invalid authentication response fields");
+        ValidateReconnectTicket(response.Reconnect);
+        return response;
+    }
+
+    private static ReconnectTicketResponse ValidateReconnectTicket(ReconnectTicketResponse response)
+    {
+        if (string.IsNullOrEmpty(response.Ticket) || response.ExpiresInSeconds == 0)
+            throw new Elr2ProtocolException("invalid reconnect ticket fields");
         return response;
     }
 }

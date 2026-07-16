@@ -10,6 +10,21 @@
 
 Gateway owns client transports, tickets, sessions, admission, routing to Worlds, and connection-oriented push delivery. World owns typed commands, modules, middleware, player state, and game behavior. Do not move business rules into Gateway interceptors merely because requests pass through Gateway.
 
+## Login and reconnect ownership
+
+The application login service authenticates credentials, owns durable login or refresh sessions,
+selects the player realm, and calls `TicketService::issue_login`. Login tickets are short-lived and
+single-use. After Gateway authentication, the response includes a longer-lived single-use
+reconnect ticket. An authenticated client renews it through `ROUTE_RECONNECT` by sending the
+current reconnect ticket; renewal consumes that ticket and returns its replacement. Reconnecting
+with a reconnect ticket rotates it again in the authentication response.
+
+Client integrations should retain only the latest reconnect ticket and renew it shortly before
+`expires_in_seconds`. If it is unavailable or expired, the client asks the application login
+service for a new login ticket using the application-owned refresh session. Only expiration or
+revocation of that refresh session should require interactive login. Elura intentionally does not
+store refresh tokens, device login sessions, or credential-provider state in Gateway.
+
 Monolith uses the same Gateway and World configuration models but connects them in process. Standalone World networking, internal authorization, and World TLS are not started by `Monolith`.
 
 ## Cargo feature selection

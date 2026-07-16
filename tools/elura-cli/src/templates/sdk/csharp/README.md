@@ -15,3 +15,7 @@ dotnet run --project Elura.Protocol.Tests/Elura.Protocol.Tests.csproj
 
 For WebSocket transport, send one frame per binary message and negotiate
 `{{PROTOCOL_IDENTIFIER}}` as the subprotocol.
+
+Every successful authentication response contains a reconnect ticket. Retain only the latest
+ticket, renew it before `ExpiresInSeconds` through the reconnect route, and replace it with the
+ticket returned by that response. The renewal request consumes the previous ticket.

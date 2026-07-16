@@ -29,7 +29,7 @@ use elura_core::session::{
     Identity, Session, SessionControlEvent, SessionControlHandler, SessionControlKind,
     SessionControlTransport,
 };
-use elura_core::ticket::{ReplayStore, TicketService};
+use elura_core::ticket::{ReplayStore, TicketPurpose, TicketService};
 use elura_core::{Error, ErrorEnvelope, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -196,9 +196,9 @@ impl GatewayConfig {
         {
             return Err(Error::InvalidConfig("invalid route rate limit".into()));
         }
-        if self.ticket.ttl.is_zero() {
+        if self.ticket.login_ttl.is_zero() || self.ticket.reconnect_ttl.is_zero() {
             return Err(Error::InvalidConfig(
-                "gateway ticket TTL must be positive".into(),
+                "gateway ticket TTLs must be positive".into(),
             ));
         }
         self.world_routing.validate()?;
@@ -216,6 +216,7 @@ struct AuthenticateRequest {
 struct AuthenticateResponse {
     session_id: String,
     identity: Identity,
+    reconnect: ReconnectTicketResponse,
 }
 
 pub struct TcpWorldClient {
@@ -653,8 +654,15 @@ pub struct GatewayStatsSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReconnectTicketRequest {
+    pub ticket: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReconnectTicketResponse {
     pub ticket: String,
+    pub expires_in_seconds: u64,
 }
 
 impl Default for GatewayStats {
@@ -1747,20 +1755,34 @@ impl ConnectionContext {
                     }
                 }
                 self.kick_previous(previous, &claims.identity).await;
+                let reconnect = ReconnectTicketResponse {
+                    ticket: self.tickets.issue_reconnect(claims.identity.clone())?,
+                    expires_in_seconds: self.tickets.reconnect_ttl().as_secs(),
+                };
                 Ok(Bytes::from(serde_json::to_vec(&AuthenticateResponse {
                     session_id: session.id().to_string(),
                     identity: claims.identity,
+                    reconnect,
                 })?))
             }
             ROUTE_HEARTBEAT => Ok(Bytes::new()),
             ROUTE_RECONNECT => {
-                if !frame.payload.is_empty() && frame.payload != Bytes::from_static(b"{}") {
-                    return Err(Error::InvalidFrame("invalid reconnect request".into()));
+                let request: ReconnectTicketRequest = serde_json::from_slice(&frame.payload)?;
+                if request.ticket.is_empty() {
+                    return Err(Error::Authentication);
                 }
                 let identity = session.identity().ok_or(Error::Authentication)?;
-                let ticket = self.tickets.issue(identity)?;
+                let verified = self.tickets.validate(&request.ticket)?;
+                if verified.claims().purpose != TicketPurpose::Reconnect
+                    || verified.claims().identity != identity
+                {
+                    return Err(Error::Authentication);
+                }
+                verified.consume(self.replay.as_ref()).await?;
+                let ticket = self.tickets.issue_reconnect(identity)?;
                 Ok(Bytes::from(serde_json::to_vec(&ReconnectTicketResponse {
                     ticket,
+                    expires_in_seconds: self.tickets.reconnect_ttl().as_secs(),
                 })?))
             }
             route => {

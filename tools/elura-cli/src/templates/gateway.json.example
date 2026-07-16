@@ -2,7 +2,9 @@
   "runtime": {
     "ticket": {
       "issuer": "game-login",
-      "audience": "game-gateway"
+      "audience": "game-gateway",
+      "login_ttl": { "secs": 60, "nanos": 0 },
+      "reconnect_ttl": { "secs": 1800, "nanos": 0 }
     },
     "world_routing": {
       "pool_size": 1,

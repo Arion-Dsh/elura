@@ -13,3 +13,7 @@ npm test
 For WebSocket transport, send one frame per binary message and negotiate
 `{{PROTOCOL_IDENTIFIER}}` as the subprotocol. Request IDs are represented as `bigint` so the full
 unsigned 64-bit range is preserved.
+
+Every successful authentication response contains a reconnect ticket. Retain only the latest
+ticket, renew it before `expires_in_seconds` through the reconnect route, and replace it with the
+ticket returned by that response. The renewal request consumes the previous ticket.

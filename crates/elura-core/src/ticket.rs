@@ -23,7 +23,19 @@ pub struct TicketClaims {
     pub ticket_id: String,
     pub issued_at: u64,
     pub expires_at: u64,
+    pub purpose: TicketPurpose,
     pub identity: Identity,
+}
+
+/// The connection flow in which a ticket may be used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum TicketPurpose {
+    /// A short-lived ticket issued after application-level login.
+    Login,
+    /// A rotating ticket issued by an authenticated Gateway session.
+    Reconnect,
 }
 
 #[async_trait]
@@ -56,7 +68,8 @@ pub struct TicketService {
     keys: Vec<Vec<u8>>,
     issuer: String,
     audience: String,
-    ttl: Duration,
+    login_ttl: Duration,
+    reconnect_ttl: Duration,
 }
 
 impl TicketService {
@@ -64,9 +77,17 @@ impl TicketService {
         key: impl Into<Vec<u8>>,
         issuer: impl Into<String>,
         audience: impl Into<String>,
-        ttl: Duration,
+        login_ttl: Duration,
+        reconnect_ttl: Duration,
     ) -> Result<Self> {
-        Self::new_rotating(key, std::iter::empty::<Vec<u8>>(), issuer, audience, ttl)
+        Self::new_rotating(
+            key,
+            std::iter::empty::<Vec<u8>>(),
+            issuer,
+            audience,
+            login_ttl,
+            reconnect_ttl,
+        )
     }
 
     pub fn new_rotating(
@@ -74,28 +95,57 @@ impl TicketService {
         previous_keys: impl IntoIterator<Item = impl Into<Vec<u8>>>,
         issuer: impl Into<String>,
         audience: impl Into<String>,
-        ttl: Duration,
+        login_ttl: Duration,
+        reconnect_ttl: Duration,
     ) -> Result<Self> {
         let mut keys = vec![primary_key.into()];
         keys.extend(previous_keys.into_iter().map(Into::into));
         if keys.iter().any(|key| key.len() < 32)
             || keys.len() > 16
-            || ttl.is_zero()
-            || ttl > Duration::from_secs(3600)
+            || login_ttl.is_zero()
+            || login_ttl > Duration::from_secs(3600)
+            || reconnect_ttl.is_zero()
+            || reconnect_ttl > Duration::from_secs(3600)
         {
             return Err(Error::InvalidConfig(
-                "ticket keys must be >=32 bytes, contain at most 16 keys and ttl <=1h".into(),
+                "ticket keys must be >=32 bytes, contain at most 16 keys and ticket ttls must be positive and <=1h".into(),
             ));
         }
         Ok(Self {
             keys,
             issuer: issuer.into(),
             audience: audience.into(),
-            ttl,
+            login_ttl,
+            reconnect_ttl,
         })
     }
 
-    pub fn issue(&self, identity: Identity) -> Result<String> {
+    /// Issues a short-lived ticket after application-level login.
+    pub fn issue_login(&self, identity: Identity) -> Result<String> {
+        self.issue_for(identity, TicketPurpose::Login, self.login_ttl)
+    }
+
+    /// Issues a rotating reconnect ticket for an authenticated Gateway session.
+    pub fn issue_reconnect(&self, identity: Identity) -> Result<String> {
+        self.issue_for(identity, TicketPurpose::Reconnect, self.reconnect_ttl)
+    }
+
+    /// Returns the configured login ticket lifetime.
+    pub const fn login_ttl(&self) -> Duration {
+        self.login_ttl
+    }
+
+    /// Returns the configured reconnect ticket lifetime.
+    pub const fn reconnect_ttl(&self) -> Duration {
+        self.reconnect_ttl
+    }
+
+    fn issue_for(
+        &self,
+        identity: Identity,
+        purpose: TicketPurpose,
+        ttl: Duration,
+    ) -> Result<String> {
         identity.validate()?;
         let now = unix_time()?;
         let mut nonce = [0_u8; 16];
@@ -105,7 +155,8 @@ impl TicketService {
             audience: self.audience.clone(),
             ticket_id: URL_SAFE_NO_PAD.encode(nonce),
             issued_at: now,
-            expires_at: now + self.ttl.as_secs(),
+            expires_at: now + ttl.as_secs(),
+            purpose,
             identity,
         };
         let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims)?);
@@ -139,9 +190,16 @@ impl TicketService {
         let claims: TicketClaims =
             serde_json::from_slice(&decoded).map_err(|_| Error::Authentication)?;
         let now = unix_time()?;
+        let maximum_lifetime = match claims.purpose {
+            TicketPurpose::Login => self.login_ttl,
+            TicketPurpose::Reconnect => self.reconnect_ttl,
+        }
+        .as_secs();
         if claims.issuer != self.issuer
             || claims.audience != self.audience
             || claims.issued_at > now + 30
+            || claims.expires_at <= claims.issued_at
+            || claims.expires_at - claims.issued_at > maximum_lifetime
             || claims.expires_at <= now
         {
             return Err(Error::TicketExpired);
@@ -201,10 +259,20 @@ mod tests {
 
     #[tokio::test]
     async fn ticket_is_single_use() {
-        let service =
-            TicketService::new([7_u8; 32], "auth", "gateway", Duration::from_secs(60)).unwrap();
+        let service = TicketService::new(
+            [7_u8; 32],
+            "auth",
+            "gateway",
+            Duration::from_secs(60),
+            Duration::from_secs(1_800),
+        )
+        .unwrap();
         let replay = MemoryReplayStore::default();
-        let token = service.issue(identity()).unwrap();
+        let token = service.issue_login(identity()).unwrap();
+        assert_eq!(
+            service.validate(&token).unwrap().claims().purpose,
+            TicketPurpose::Login
+        );
         assert_eq!(
             service.verify(&token, &replay).await.unwrap().identity,
             identity()
@@ -215,35 +283,116 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn login_and_reconnect_tickets_have_distinct_purposes_and_lifetimes() {
+        let service = TicketService::new(
+            [8_u8; 32],
+            "auth",
+            "gateway",
+            Duration::from_secs(60),
+            Duration::from_secs(1_800),
+        )
+        .unwrap();
+        let login = service.issue_login(identity()).unwrap();
+        let reconnect = service.issue_reconnect(identity()).unwrap();
+        let login = service.validate(&login).unwrap();
+        let reconnect = service.validate(&reconnect).unwrap();
+
+        assert_eq!(login.claims().purpose, TicketPurpose::Login);
+        assert_eq!(login.claims().expires_at - login.claims().issued_at, 60);
+        assert_eq!(reconnect.claims().purpose, TicketPurpose::Reconnect);
+        assert_eq!(
+            reconnect.claims().expires_at - reconnect.claims().issued_at,
+            1_800
+        );
+    }
+
+    #[test]
+    fn tickets_without_an_explicit_purpose_are_rejected() {
+        let service = TicketService::new(
+            [9_u8; 32],
+            "auth",
+            "gateway",
+            Duration::from_secs(60),
+            Duration::from_secs(1_800),
+        )
+        .unwrap();
+        let now = unix_time().unwrap();
+        let payload = URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&serde_json::json!({
+                "issuer": "auth",
+                "audience": "gateway",
+                "ticket_id": "legacy",
+                "issued_at": now,
+                "expires_at": now + 60,
+                "identity": identity(),
+            }))
+            .unwrap(),
+        );
+        let signature = sign(&[9_u8; 32], payload.as_bytes()).unwrap();
+        let token = format!("{payload}.{}", URL_SAFE_NO_PAD.encode(signature));
+
+        assert!(matches!(
+            service.validate(&token),
+            Err(Error::Authentication)
+        ));
+    }
+
     #[tokio::test]
     async fn rotation_accepts_old_key_but_signs_with_primary() {
-        let old =
-            TicketService::new([1_u8; 32], "auth", "gateway", Duration::from_secs(60)).unwrap();
+        let old = TicketService::new(
+            [1_u8; 32],
+            "auth",
+            "gateway",
+            Duration::from_secs(60),
+            Duration::from_secs(1_800),
+        )
+        .unwrap();
         let rotating = TicketService::new_rotating(
             [2_u8; 32],
             [[1_u8; 32]],
             "auth",
             "gateway",
             Duration::from_secs(60),
+            Duration::from_secs(1_800),
         )
         .unwrap();
-        let primary_only =
-            TicketService::new([2_u8; 32], "auth", "gateway", Duration::from_secs(60)).unwrap();
-        assert!(rotating.validate(&old.issue(identity()).unwrap()).is_ok());
+        let primary_only = TicketService::new(
+            [2_u8; 32],
+            "auth",
+            "gateway",
+            Duration::from_secs(60),
+            Duration::from_secs(1_800),
+        )
+        .unwrap();
         assert!(
-            primary_only
-                .validate(&rotating.issue(identity()).unwrap())
+            rotating
+                .validate(&old.issue_login(identity()).unwrap())
                 .is_ok()
         );
-        assert!(old.validate(&rotating.issue(identity()).unwrap()).is_err());
+        assert!(
+            primary_only
+                .validate(&rotating.issue_login(identity()).unwrap())
+                .is_ok()
+        );
+        assert!(
+            old.validate(&rotating.issue_login(identity()).unwrap())
+                .is_err()
+        );
     }
 
     #[tokio::test]
     async fn validation_failure_can_happen_before_consumption() {
-        let service =
-            TicketService::new([3_u8; 32], "auth", "gateway", Duration::from_secs(60)).unwrap();
+        let service = TicketService::new(
+            [3_u8; 32],
+            "auth",
+            "gateway",
+            Duration::from_secs(60),
+            Duration::from_secs(1_800),
+        )
+        .unwrap();
         let replay = MemoryReplayStore::default();
-        let token = service.issue(identity()).unwrap();
+        let token = service.issue_login(identity()).unwrap();
         let verified = service.validate(&token).unwrap();
         assert_eq!(verified.claims().identity, identity());
         drop(verified);
