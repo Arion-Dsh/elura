@@ -80,7 +80,7 @@ async fn monolith_routes_gateway_requests_without_world_tcp() {
     let launcher = MonolithLauncher::new(config)
         .unwrap()
         .configure_world(|world| {
-            world.register(100, |_context, payload: Bytes| async move { Ok(payload) })?;
+            world.register_raw(100, |_context, payload: Bytes| async move { Ok(payload) })?;
             Ok(())
         })
         .unwrap();
@@ -920,7 +920,7 @@ async fn websocket_uses_the_gateway_session_engine() {
     })
     .unwrap();
     world
-        .register(100, |_context, payload| async move { Ok(payload) })
+        .register_raw(100, |_context, payload| async move { Ok(payload) })
         .unwrap();
     let world = world
         .build()
@@ -1067,10 +1067,10 @@ async fn ticket_gateway_world_round_trip() {
     })
     .unwrap();
     world
-        .register(100, |_context, payload| async move { Ok(payload) })
+        .register_raw(100, |_context, payload| async move { Ok(payload) })
         .unwrap();
     world
-        .register(101, |_context, _payload| async move {
+        .register_raw(101, |_context, _payload| async move {
             Err(elura_core::Error::business(
                 "NOT_ENOUGH_GOLD",
                 "not enough gold",

@@ -79,6 +79,6 @@ impl AdminDiagnostics for WorldDiagnostics {
     }
 
     async fn routes(&self) -> Option<Value> {
-        serde_json::to_value(self.route_manifest()).ok()
+        serde_json::to_value(WorldDiagnostics::routes(self)).ok()
     }
 }

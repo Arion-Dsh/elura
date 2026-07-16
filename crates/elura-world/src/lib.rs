@@ -30,7 +30,7 @@ pub use middleware::{
     WorldTransaction,
 };
 pub use module::WorldModule;
-pub use routes::{RouteCatalog, RouteManifest, WorldRoute};
+pub use routes::{Route, RouteInfo};
 pub use runtime::WorldBuilder;
 pub use server::{InProcessWorldClient, WorldDiagnostics, WorldServer};
 pub use stats::WorldStatsSnapshot;

@@ -279,7 +279,7 @@ mod tests {
         MonolithLauncher::new(config())
             .unwrap()
             .configure_world(|world| {
-                world.register(100, |_context, payload: Bytes| async move { Ok(payload) })?;
+                world.register_raw(100, |_context, payload: Bytes| async move { Ok(payload) })?;
                 Ok(())
             })
             .unwrap()

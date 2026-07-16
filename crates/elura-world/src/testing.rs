@@ -6,7 +6,7 @@ use elura_core::{Error, Result};
 use uuid::Uuid;
 
 use super::runtime::WorldRuntime;
-use super::{RouteManifest, WorldCommand, WorldStatsSnapshot};
+use super::{RouteInfo, WorldCommand, WorldStatsSnapshot};
 
 #[derive(Clone)]
 pub struct WorldHarness {
@@ -52,8 +52,8 @@ impl WorldHarness {
             .await
     }
 
-    pub fn routes(&self) -> RouteManifest {
-        self.runtime.route_manifest()
+    pub fn routes(&self) -> Vec<RouteInfo> {
+        self.runtime.route_info()
     }
     pub fn stats(&self) -> WorldStatsSnapshot {
         self.runtime.stats()
@@ -69,7 +69,7 @@ mod tests {
     async fn invokes_business_handler_without_network_runtime() {
         let mut builder = WorldBuilder::new(WorldConfig::default()).unwrap();
         builder
-            .register(100, |_context, payload: Bytes| async move { Ok(payload) })
+            .register_raw(100, |_context, payload: Bytes| async move { Ok(payload) })
             .unwrap();
         let harness = builder.build().unwrap().harness();
         let identity = Identity {

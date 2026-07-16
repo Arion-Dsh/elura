@@ -7,7 +7,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-elura-adapters = { version = "0.1.0", path = "../../crates/elura-adapters", default-features = false, features = ["redis"] }
+elura-adapters = { version = "0.1.1", path = "../../crates/elura-adapters", default-features = false, features = ["redis"] }
 elura-core.workspace = true
 elura-gateway.workspace = true
 elura-runtime.workspace = true

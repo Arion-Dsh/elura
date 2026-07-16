@@ -580,13 +580,11 @@ fn artifacts(profile: &str, options: &Options) -> Result<Vec<GeneratedArtifact>,
             .filter(|route_id| *route_id >= 100)
             .ok_or_else(|| usage_error("route ID must be between 100 and 4294967295"))?;
         let type_name = upper_camel(&options.name);
-        let route_const = options.name.to_ascii_uppercase();
         let route_id = route_id.to_string();
         let values = [
             ("MODULE", options.module.as_str()),
             ("ROUTE", options.name.as_str()),
             ("TYPE", type_name.as_str()),
-            ("ROUTE_CONST", route_const.as_str()),
             ("ROUTE_ID", route_id.as_str()),
         ];
         return Ok(vec![
@@ -899,8 +897,8 @@ mod tests {
         assert!(proto.contains("message ListItemsRequest"));
         assert!(proto.contains("package game.inventory.v2;"));
         assert!(handler.contains("crate::proto::inventory::v2::ListItemsRequest"));
-        assert!(handler.contains("ROUTE_LIST_ITEMS: u32 = 120"));
-        assert!(handler.contains("register_handler"));
+        assert!(handler.contains("const ID: u32 = 120"));
+        assert!(handler.contains("register(ListItems, handle)"));
     }
 
     #[test]
@@ -970,7 +968,8 @@ mod tests {
         let world = fs::read_to_string(directory.0.join("src/bin/world.rs")).unwrap();
         assert!(world.contains("struct AppConfig"));
         assert!(world.contains("WorldLauncher::new(app.runtime)"));
-        assert!(world.contains("ROUTE_GET_PLAYER_PROFILE"));
+        assert!(world.contains("impl Route for GetPlayerProfile"));
+        assert!(world.contains("builder.register("));
         assert!(world.contains("welcome_message"));
     }
 

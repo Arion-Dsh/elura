@@ -87,9 +87,9 @@ pub mod prelude {
     pub use crate::world::player::{InvalidationBus, InvalidationHandler, PlayerLoader};
     #[cfg(feature = "world")]
     pub use crate::world::{
-        InProcessWorldClient, Next, WorldBuilder, WorldConfig, WorldContext, WorldDiagnostics,
-        WorldHandler, WorldLaunchConfig, WorldLauncher, WorldMiddleware, WorldModule, WorldServer,
-        WorldStatsSnapshot,
+        InProcessWorldClient, Next, Route, WorldBuilder, WorldConfig, WorldContext,
+        WorldDiagnostics, WorldHandler, WorldLaunchConfig, WorldLauncher, WorldMiddleware,
+        WorldModule, WorldServer, WorldStatsSnapshot,
     };
 
     #[cfg(feature = "adapters")]
@@ -109,9 +109,9 @@ pub mod prelude {
 #[cfg(feature = "world")]
 pub mod world {
     pub use elura_world::{
-        InProcessWorldClient, Next, WorldBuilder, WorldConfig, WorldContext, WorldDiagnostics,
-        WorldHandler, WorldLaunchConfig, WorldLauncher, WorldMiddleware, WorldModule, WorldServer,
-        WorldStatsSnapshot,
+        InProcessWorldClient, Next, Route, WorldBuilder, WorldConfig, WorldContext,
+        WorldDiagnostics, WorldHandler, WorldLaunchConfig, WorldLauncher, WorldMiddleware,
+        WorldModule, WorldServer, WorldStatsSnapshot,
     };
 
     /// Middleware contracts and built-in middleware.
@@ -131,9 +131,9 @@ pub mod world {
         pub use elura_world::player::*;
     }
 
-    /// Route metadata exposed through World diagnostics.
-    pub mod routes {
-        pub use elura_world::{RouteCatalog, RouteManifest, WorldRoute};
+    /// Data returned by World diagnostics.
+    pub mod diagnostics {
+        pub use elura_world::RouteInfo;
     }
 
     /// In-process World test harness.

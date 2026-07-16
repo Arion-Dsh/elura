@@ -17,17 +17,17 @@ use super::keyed::KeyedExecutor;
 use super::server::WorldServer;
 use super::stats::{WorldStats, WorldStatsSnapshot};
 use super::{Next, WorldContext, WorldHandler, WorldMiddleware, WorldModule};
-use super::{RouteCatalog, RouteManifest, WorldRoute};
+use super::{Route, RouteInfo};
 
 pub struct WorldBuilder {
     pub(crate) config: WorldConfig,
     handlers: HashMap<u32, Arc<dyn WorldHandler>>,
+    route_names: HashMap<u32, String>,
     middleware: Vec<Arc<dyn WorldMiddleware>>,
     route_middleware: HashMap<u32, Vec<Arc<dyn WorldMiddleware>>>,
     modules: Vec<Arc<dyn WorldModule>>,
     module_names: HashSet<String>,
     pusher: Option<Arc<dyn PushTransport>>,
-    catalog: Option<RouteCatalog>,
 }
 
 impl WorldBuilder {
@@ -36,12 +36,12 @@ impl WorldBuilder {
         Ok(Self {
             config,
             handlers: HashMap::new(),
+            route_names: HashMap::new(),
             middleware: Vec::new(),
             route_middleware: HashMap::new(),
             modules: Vec::new(),
             module_names: HashSet::new(),
             pusher: None,
-            catalog: None,
         })
     }
 
@@ -50,28 +50,9 @@ impl WorldBuilder {
         self
     }
 
-    pub fn with_route_catalog(mut self, catalog: RouteCatalog) -> Result<Self> {
-        if self.handlers.keys().any(|route| !catalog.contains(*route)) {
-            return Err(Error::InvalidConfig(
-                "registered World route is absent from catalog".into(),
-            ));
-        }
-        self.catalog = Some(catalog);
-        Ok(self)
-    }
-
-    pub fn register(&mut self, route: u32, handler: impl WorldHandler) -> Result<&mut Self> {
+    pub fn register_raw(&mut self, route: u32, handler: impl WorldHandler) -> Result<&mut Self> {
         if route < FIRST_APPLICATION_ROUTE {
             return Err(Error::InvalidConfig(format!("route {route} is reserved")));
-        }
-        if self
-            .catalog
-            .as_ref()
-            .is_some_and(|catalog| !catalog.contains(route))
-        {
-            return Err(Error::InvalidConfig(format!(
-                "route {route} is absent from World catalog"
-            )));
         }
         match self.handlers.entry(route) {
             Entry::Vacant(entry) => {
@@ -82,29 +63,36 @@ impl WorldBuilder {
         Ok(self)
     }
 
-    /// Registers a typed Protobuf request handler for an application route.
-    pub fn register_handler<Request, Response, F, Fut>(
-        &mut self,
-        route: u32,
-        handler: F,
-    ) -> Result<&mut Self>
+    /// Registers a typed Protobuf application route.
+    pub fn register<E, F, Fut>(&mut self, _route: E, handler: F) -> Result<&mut Self>
     where
-        Request: Message + Default + Send + 'static,
-        Response: Message + Send + 'static,
-        F: Fn(WorldContext, Request) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Result<Response>> + Send + 'static,
+        E: Route,
+        F: Fn(WorldContext, E::Request) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<E::Response>> + Send + 'static,
     {
+        if E::NAME.trim().is_empty() {
+            return Err(Error::InvalidConfig(
+                "World route name must not be empty".into(),
+            ));
+        }
+        if self.route_names.values().any(|name| name == E::NAME) {
+            return Err(Error::InvalidConfig(format!(
+                "duplicate World route name {}",
+                E::NAME
+            )));
+        }
         let handler = Arc::new(handler);
-        self.register(route, move |context, payload: Bytes| {
+        self.register_raw(E::ID, move |context, payload: Bytes| {
             let handler = handler.clone();
             async move {
-                let request = Request::decode(payload)
+                let request = E::Request::decode(payload)
                     .map_err(|_| Error::business("INVALID_PAYLOAD", "invalid Protobuf payload"))?;
-                Ok(Bytes::from(
-                    handler(context, request).await?.encode_to_vec(),
-                ))
+                let response = handler(context, request).await?;
+                Ok(Bytes::from(response.encode_to_vec()))
             }
-        })
+        })?;
+        self.route_names.insert(E::ID, E::NAME.to_owned());
+        Ok(self)
     }
 
     pub fn use_middleware(&mut self, middleware: Arc<dyn WorldMiddleware>) -> Result<&mut Self> {
@@ -127,13 +115,13 @@ impl WorldBuilder {
         Ok(self)
     }
 
-    pub fn register_with_middleware(
+    pub fn register_raw_with_middleware(
         &mut self,
         route: u32,
         handler: impl WorldHandler,
         middleware: impl IntoIterator<Item = Arc<dyn WorldMiddleware>>,
     ) -> Result<&mut Self> {
-        self.register(route, handler)?;
+        self.register_raw(route, handler)?;
         self.route_middleware
             .entry(route)
             .or_default()
@@ -152,10 +140,12 @@ impl WorldBuilder {
             )));
         }
         let handlers = self.handlers.clone();
+        let route_names = self.route_names.clone();
         let middleware_count = self.middleware.len();
         let route_middleware = self.route_middleware.clone();
         if let Err(error) = module.register(self) {
             self.handlers = handlers;
+            self.route_names = route_names;
             self.middleware.truncate(middleware_count);
             self.route_middleware = route_middleware;
             return Err(error);
@@ -174,26 +164,13 @@ impl WorldBuilder {
                 "world requires at least one route".into(),
             ));
         }
-        let manifest = match &self.catalog {
-            Some(catalog) => {
-                let manifest = catalog.routes();
-                if manifest.len() != routes.len()
-                    || manifest.iter().any(|entry| !routes.contains(&entry.id))
-                {
-                    return Err(Error::InvalidConfig(
-                        "World route catalog and handlers are incomplete".into(),
-                    ));
-                }
-                manifest
-            }
-            None => routes
-                .iter()
-                .map(|id| WorldRoute {
-                    id: *id,
-                    name: String::new(),
-                })
-                .collect(),
-        };
+        let route_info = routes
+            .iter()
+            .map(|id| RouteInfo {
+                id: *id,
+                name: self.route_names.get(id).cloned().unwrap_or_default(),
+            })
+            .collect();
         let middleware_by_route = routes
             .iter()
             .map(|route| {
@@ -211,7 +188,7 @@ impl WorldBuilder {
             pusher: self.pusher,
             handler_timeout: self.config.handler_timeout,
             routes,
-            manifest,
+            route_info,
             stats: Arc::new(WorldStats::default()),
         });
         Ok(WorldServer::from_parts(self.config, runtime, self.modules))
@@ -225,7 +202,7 @@ pub(crate) struct WorldRuntime {
     pusher: Option<Arc<dyn PushTransport>>,
     handler_timeout: std::time::Duration,
     routes: Vec<u32>,
-    manifest: RouteManifest,
+    route_info: Vec<RouteInfo>,
     stats: Arc<WorldStats>,
 }
 
@@ -234,8 +211,8 @@ impl WorldRuntime {
         &self.routes
     }
 
-    pub fn route_manifest(&self) -> RouteManifest {
-        self.manifest.clone()
+    pub fn route_info(&self) -> Vec<RouteInfo> {
+        self.route_info.clone()
     }
 
     pub fn stats(&self) -> WorldStatsSnapshot {

@@ -21,7 +21,7 @@ use elura_runtime::internal::{BoxedInternalStream, InternalToken, ServerTlsConfi
 use super::WorldModule;
 use super::config::WorldConfig;
 use super::runtime::{WorldBuilder, WorldRuntime};
-use super::{RouteManifest, WorldHarness, WorldStatsSnapshot};
+use super::{RouteInfo, WorldHarness, WorldStatsSnapshot};
 
 pub struct WorldServer {
     config: WorldConfig,
@@ -103,8 +103,8 @@ impl WorldDiagnostics {
         self.ready.load(Ordering::Acquire)
     }
 
-    pub fn route_manifest(&self) -> RouteManifest {
-        self.runtime.route_manifest()
+    pub fn routes(&self) -> Vec<RouteInfo> {
+        self.runtime.route_info()
     }
 
     pub fn stats(&self) -> WorldStatsSnapshot {
@@ -174,8 +174,8 @@ impl WorldServer {
         Ok(self)
     }
 
-    pub fn route_manifest(&self) -> RouteManifest {
-        self.runtime.route_manifest()
+    pub fn routes(&self) -> Vec<RouteInfo> {
+        self.runtime.route_info()
     }
 
     pub fn stats(&self) -> WorldStatsSnapshot {
@@ -526,8 +526,8 @@ mod tests {
     use super::*;
     use crate::player::{PlayerLoader, PlayerSnapshot, PlayerStateMiddleware};
     use crate::{
-        ContextKey, Next, RouteCatalog, TransactionFactory, UnitOfWorkMiddleware, WorldBuilder,
-        WorldContext, WorldMiddleware, WorldModule, WorldRoute, WorldTransaction,
+        ContextKey, Next, Route, RouteInfo, TransactionFactory, UnitOfWorkMiddleware, WorldBuilder,
+        WorldContext, WorldMiddleware, WorldModule, WorldTransaction,
     };
     use elura_core::session::PlayerKey;
 
@@ -560,7 +560,7 @@ mod tests {
     fn rejects_reserved_and_duplicate_routes() {
         let mut builder = WorldBuilder::new(WorldConfig::default()).unwrap();
         assert!(matches!(
-            builder.register(
+            builder.register_raw(
                 FIRST_APPLICATION_ROUTE - 1,
                 |_context, payload: Bytes| async move { Ok(payload) },
             ),
@@ -568,13 +568,13 @@ mod tests {
         ));
 
         builder
-            .register(
+            .register_raw(
                 FIRST_APPLICATION_ROUTE,
                 |_context, payload: Bytes| async move { Ok(payload) },
             )
             .unwrap();
         assert!(matches!(
-            builder.register(
+            builder.register_raw(
                 FIRST_APPLICATION_ROUTE,
                 |_context, payload: Bytes| async move { Ok(payload) },
             ),
@@ -589,7 +589,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let mut builder = WorldBuilder::new(WorldConfig::default()).unwrap();
         builder
-            .register(100, {
+            .register_raw(100, {
                 let active = active.clone();
                 let maximum = maximum.clone();
                 let calls = calls.clone();
@@ -630,17 +630,34 @@ mod tests {
         value: String,
     }
 
+    struct EchoEndpoint;
+
+    impl Route for EchoEndpoint {
+        const ID: u32 = 100;
+        const NAME: &'static str = "echo";
+
+        type Request = Echo;
+        type Response = Echo;
+    }
+
     #[tokio::test]
     async fn handles_typed_protobuf() {
         let mut builder = WorldBuilder::new(WorldConfig::default()).unwrap();
         builder
-            .register_handler(100, |_context, request: Echo| async move {
+            .register(EchoEndpoint, |_context, request| async move {
                 Ok(Echo {
                     value: request.value.to_uppercase(),
                 })
             })
             .unwrap();
         let server = builder.build().unwrap();
+        assert_eq!(
+            server.routes(),
+            vec![RouteInfo {
+                id: EchoEndpoint::ID,
+                name: EchoEndpoint::NAME.into(),
+            }]
+        );
         let response = server
             .runtime
             .execute(
@@ -706,7 +723,7 @@ mod tests {
         })
         .unwrap();
         builder
-            .register(100, |_context, payload: Bytes| async move { Ok(payload) })
+            .register_raw(100, |_context, payload: Bytes| async move { Ok(payload) })
             .unwrap();
         let server = builder
             .build()
@@ -741,7 +758,7 @@ mod tests {
         }
 
         fn register(&self, builder: &mut WorldBuilder) -> Result<()> {
-            builder.register(100, |_context, payload: Bytes| async move { Ok(payload) })?;
+            builder.register_raw(100, |_context, payload: Bytes| async move { Ok(payload) })?;
             Ok(())
         }
 
@@ -783,7 +800,7 @@ mod tests {
         })
         .unwrap();
         builder
-            .register(100, |_context, payload: Bytes| async move { Ok(payload) })
+            .register_raw(100, |_context, payload: Bytes| async move { Ok(payload) })
             .unwrap();
         let server = builder.build().unwrap();
         let client = server.in_process_client();
@@ -846,7 +863,7 @@ mod tests {
                 events: events.clone(),
             }))
             .unwrap()
-            .register_with_middleware(
+            .register_raw_with_middleware(
                 100,
                 |_context, payload: Bytes| async move { Ok(payload) },
                 [Arc::new(RecordingMiddleware {
@@ -875,7 +892,7 @@ mod tests {
         }
 
         fn register(&self, builder: &mut WorldBuilder) -> Result<()> {
-            builder.register(101, |_context, payload: Bytes| async move { Ok(payload) })?;
+            builder.register_raw(101, |_context, payload: Bytes| async move { Ok(payload) })?;
             builder.use_middleware(Arc::new(RecordingMiddleware {
                 name: "leaked",
                 events: self.events.clone(),
@@ -889,7 +906,7 @@ mod tests {
         let events = Arc::new(StdMutex::new(Vec::new()));
         let mut builder = WorldBuilder::new(WorldConfig::default()).unwrap();
         builder
-            .register(100, |_context, payload: Bytes| async move { Ok(payload) })
+            .register_raw(100, |_context, payload: Bytes| async move { Ok(payload) })
             .unwrap();
         assert!(
             builder
@@ -899,7 +916,7 @@ mod tests {
                 .is_err()
         );
         let server = builder.build().unwrap();
-        assert_eq!(server.route_manifest().len(), 1);
+        assert_eq!(server.routes().len(), 1);
         server
             .runtime
             .execute(100, 1, command(1, b"ok"))
@@ -961,7 +978,7 @@ mod tests {
         })
         .unwrap();
         builder
-            .register(100, |_context, payload: Bytes| async move {
+            .register_raw(100, |_context, payload: Bytes| async move {
                 if payload == Bytes::from_static(b"timeout") {
                     std::future::pending::<Result<Bytes>>().await
                 } else if payload == Bytes::from_static(b"fail") {
@@ -1010,7 +1027,7 @@ mod tests {
         })
         .unwrap();
         builder
-            .register(100, |_context, payload: Bytes| async move { Ok(payload) })
+            .register_raw(100, |_context, payload: Bytes| async move { Ok(payload) })
             .unwrap()
             .use_middleware(Arc::new(UnitOfWorkMiddleware::new(Arc::new(
                 TestTransactions {
@@ -1049,41 +1066,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn injects_player_state_and_reports_manifest_and_stats() {
+    async fn injects_player_state_and_reports_routes_and_stats() {
+        struct PlayerGet;
+
+        impl Route for PlayerGet {
+            const ID: u32 = 100;
+            const NAME: &'static str = "player.get";
+
+            type Request = Echo;
+            type Response = Echo;
+        }
+
         let key = ContextKey::new("player-state").unwrap();
-        let mut builder = WorldBuilder::new(WorldConfig::default())
-            .unwrap()
-            .with_route_catalog(
-                RouteCatalog::new([WorldRoute {
-                    id: 100,
-                    name: "player.get".into(),
-                }])
-                .unwrap(),
-            )
-            .unwrap();
+        let mut builder = WorldBuilder::new(WorldConfig::default()).unwrap();
         builder
             .use_middleware(Arc::new(PlayerStateMiddleware::new(
                 key.clone(),
                 Arc::new(StaticPlayerLoader),
             )))
             .unwrap()
-            .register(100, move |context: WorldContext, _payload: Bytes| {
+            .register(PlayerGet, move |context: WorldContext, _request| {
                 let key = key.clone();
                 async move {
                     let snapshot = context.value(&key).unwrap();
-                    Ok(Bytes::from(snapshot.value.clone()))
+                    Ok(Echo {
+                        value: snapshot.value.clone(),
+                    })
                 }
             })
             .unwrap();
         let server = builder.build().unwrap();
-        assert_eq!(server.route_manifest()[0].name, "player.get");
+        assert_eq!(server.routes()[0].name, "player.get");
         assert_eq!(
-            server
-                .runtime
-                .execute(100, 1, command(7, b""))
-                .await
-                .unwrap(),
-            Bytes::from_static(b"player-7")
+            Echo::decode(
+                server
+                    .runtime
+                    .execute(100, 1, command(7, b""))
+                    .await
+                    .unwrap()
+            )
+            .unwrap()
+            .value,
+            "player-7"
         );
         let stats = server.stats();
         assert_eq!(stats.commands, 1);

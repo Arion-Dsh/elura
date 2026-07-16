@@ -34,7 +34,7 @@ async fn main() -> AnyResult<()> {
         handler_timeout: Duration::from_secs(30),
         ..WorldConfig::default()
     })?;
-    builder.register(ROUTE_ECHO, move |_context, payload| async move {
+    builder.register_raw(ROUTE_ECHO, move |_context, payload| async move {
         if !handler_delay.is_zero() {
             tokio::time::sleep(handler_delay).await;
         }

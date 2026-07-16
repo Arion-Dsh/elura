@@ -4,7 +4,15 @@ use elura::prelude::*;
 use prost::Message;
 use serde::Deserialize;
 
-const ROUTE_GET_PLAYER_PROFILE: u32 = 100;
+struct GetPlayerProfile;
+
+impl Route for GetPlayerProfile {
+    const ID: u32 = 100;
+    const NAME: &'static str = "player.get_profile";
+
+    type Request = GetPlayerProfileRequest;
+    type Response = GetPlayerProfileResponse;
+}
 
 #[derive(Clone, Deserialize)]
 struct PlayerProfileConfig {
@@ -86,8 +94,8 @@ fn parse_address(name: &str, value: &str) -> elura::Result<std::net::SocketAddr>
 }
 
 fn register(builder: &mut WorldBuilder, profile: PlayerProfileConfig) -> elura::Result<()> {
-    builder.register_handler::<GetPlayerProfileRequest, GetPlayerProfileResponse, _, _>(
-        ROUTE_GET_PLAYER_PROFILE,
+    builder.register(
+        GetPlayerProfile,
         move |context: WorldContext, _request| {
             let profile = profile.clone();
             async move {

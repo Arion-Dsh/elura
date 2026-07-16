@@ -155,7 +155,7 @@ mod tests {
         WorldLauncher::new(config())
             .unwrap()
             .configure(|builder| {
-                builder.register(100, |_context, payload| async move { Ok(payload) })?;
+                builder.register_raw(100, |_context, payload| async move { Ok(payload) })?;
                 Ok(())
             })
             .unwrap()
