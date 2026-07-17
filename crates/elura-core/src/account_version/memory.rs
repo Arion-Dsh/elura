@@ -16,6 +16,11 @@ fn validate_write(key: AccountVersionKey, version: u64) -> Result<()> {
 }
 
 #[derive(Default)]
+/// Process-local account-version store backed by an in-memory map.
+///
+/// Clones are intentionally not provided: share one instance behind an
+/// [`std::sync::Arc`] when multiple tasks need the same version space. Values
+/// are lost when the process exits.
 pub struct MemoryAccountVersionStore {
     versions: RwLock<HashMap<AccountVersionKey, u64>>,
 }
