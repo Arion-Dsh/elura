@@ -957,7 +957,7 @@ dependencies = [
 
 [[package]]
 name = "elura"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "elura-adapters",
  "elura-core",
@@ -970,7 +970,7 @@ dependencies = [
 
 [[package]]
 name = "elura-adapters"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "async-trait",
  "axum",
@@ -995,14 +995,14 @@ dependencies = [
 
 [[package]]
 name = "elura-cli"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "elura-core",
 ]
 
 [[package]]
 name = "elura-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "async-trait",
  "base64",
@@ -1023,7 +1023,7 @@ dependencies = [
 
 [[package]]
 name = "elura-gateway"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "async-trait",
  "axum",
@@ -1048,7 +1048,7 @@ dependencies = [
 
 [[package]]
 name = "elura-load"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "bytes",
  "elura-core",
@@ -1060,7 +1060,7 @@ dependencies = [
 
 [[package]]
 name = "elura-monolith"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1079,7 +1079,7 @@ dependencies = [
 
 [[package]]
 name = "elura-perf"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "elura-adapters",
  "elura-core",
@@ -1091,7 +1091,7 @@ dependencies = [
 
 [[package]]
 name = "elura-providers"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1124,7 +1124,7 @@ dependencies = [
 
 [[package]]
 name = "elura-runtime"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "async-trait",
  "axum",
@@ -1144,7 +1144,7 @@ dependencies = [
 
 [[package]]
 name = "elura-world"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "async-trait",
  "axum",

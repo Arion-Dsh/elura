@@ -274,6 +274,7 @@ void validate_identity(const Identity& identity) {
 
 void validate_error_envelope(const ErrorEnvelope& envelope) {
   if (envelope.code.empty() || envelope.code.size() > 64 || envelope.message.size() > 1024 ||
+      (envelope.retry_after_ms.has_value() && *envelope.retry_after_ms == 0) ||
       !valid_utf8(envelope.message) ||
       !std::all_of(envelope.code.begin(), envelope.code.end(), [](unsigned char value) {
         return (value >= 'A' && value <= 'Z') || (value >= '0' && value <= '9') || value == '_';

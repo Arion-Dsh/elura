@@ -1,10 +1,9 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::Router;
 use elura_core::account_version::AccountVersionStore;
 use elura_core::gateway_world::WorldDiscovery;
-use elura_core::online::{DuplicateLoginMode, OnlineDirectory};
+use elura_core::online::OnlineDirectory;
 use elura_core::ownership::OwnershipResolver;
 use elura_core::push::PushTransport;
 use elura_core::session::SessionControlTransport;
@@ -18,7 +17,10 @@ use super::transport::{
     AccountVersionSettings, AdmissionController, AdmissionSettings, GatewayTransport,
     SessionObserver,
 };
-use super::{GatewayConfig, GatewayInfrastructure, GatewayInterceptor, GatewayServer, WorldClient};
+use super::{
+    GatewayConfig, GatewayInfrastructure, GatewayInterceptor, GatewayOnlineConfig, GatewayServer,
+    WorldClient,
+};
 
 /// Application-facing Gateway assembly and startup API.
 ///
@@ -59,21 +61,10 @@ impl Gateway {
 
     pub fn online_directory(
         self,
-        gateway_id: impl Into<String>,
         directory: Arc<dyn OnlineDirectory>,
-        lease_ttl: Duration,
-        renew_interval: Duration,
-        duplicate_login: DuplicateLoginMode,
+        config: GatewayOnlineConfig,
     ) -> Self {
-        self.configure(|builder| {
-            Ok(builder.with_online_directory(
-                gateway_id,
-                directory,
-                lease_ttl,
-                renew_interval,
-                duplicate_login,
-            ))
-        })
+        self.configure(|builder| Ok(builder.with_online_directory(directory, config)))
     }
 
     pub fn push_transport(self, push: Arc<dyn PushTransport>) -> Self {

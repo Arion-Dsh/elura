@@ -32,7 +32,8 @@ pub mod prelude {
     };
     #[cfg(feature = "core")]
     pub use elura_core::online::{
-        DuplicateLoginMode, OnlineBackend, OnlineDirectory, OnlineStats, OnlineStatsReader,
+        DuplicateLoginMode, OnlineAdmission, OnlineAdmissionPolicy, OnlineBackend, OnlineDirectory,
+        OnlineStats, OnlineStatsReader,
     };
     #[cfg(feature = "core")]
     pub use elura_core::otp::OtpStore;
@@ -60,10 +61,10 @@ pub mod prelude {
     #[cfg(feature = "gateway")]
     pub use crate::gateway::{
         Gateway, GatewayConfig, GatewayInterceptContext, GatewayInterceptor, GatewayNext,
-        GatewayRealmAdmissionConfig, GatewayRequest, GatewayResponse, GatewayServer,
-        GatewayStatsSnapshot, GatewayTicketConfig, GatewayWorldTlsConfig, ReconnectTicketRequest,
-        ReconnectTicketResponse, RouteRateLimit, TcpWorldClient, WorldClient, WorldRequest,
-        WorldRouteTarget, WorldRouteUpdater,
+        GatewayOnlineConfig, GatewayRealmAdmissionConfig, GatewayRequest, GatewayResponse,
+        GatewayServer, GatewayStatsSnapshot, GatewayTicketConfig, GatewayWorldTlsConfig,
+        RealmCapacityLimit, ReconnectTicketRequest, ReconnectTicketResponse, RouteRateLimit,
+        TcpWorldClient, WorldClient, WorldRequest, WorldRouteTarget, WorldRouteUpdater,
     };
     #[cfg(feature = "runtime")]
     pub use crate::launch::ServerTlsFilesConfig;

@@ -38,7 +38,8 @@ public sealed record ReconnectTicketResponse(
 public sealed record ErrorEnvelope(
     [property: JsonPropertyName("code")] string Code,
     [property: JsonPropertyName("message")] string Message,
-    [property: JsonPropertyName("retryable")] bool Retryable);
+    [property: JsonPropertyName("retryable")] bool Retryable,
+    [property: JsonPropertyName("retry_after_ms")] ulong? RetryAfterMs);
 
 public static class GatewayPayloadCodec
 {
@@ -70,6 +71,7 @@ public static class GatewayPayloadCodec
             ?? throw new Elr2ProtocolException("invalid error envelope");
         if (envelope.Code.Length is 0 or > 64 ||
             Encoding.UTF8.GetByteCount(envelope.Message) > 1024 ||
+            envelope.RetryAfterMs == 0 ||
             envelope.Code.Any(character =>
                 character is not (>= 'A' and <= 'Z') and not (>= '0' and <= '9') and not '_'))
             throw new Elr2ProtocolException("invalid error envelope fields");

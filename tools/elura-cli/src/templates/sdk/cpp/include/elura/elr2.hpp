@@ -88,7 +88,12 @@ struct AuthenticateResponse {
   Identity identity;
   ReconnectTicketResponse reconnect;
 };
-struct ErrorEnvelope { std::string code; std::string message; bool retryable = false; };
+struct ErrorEnvelope {
+  std::string code;
+  std::string message;
+  bool retryable = false;
+  std::optional<std::uint64_t> retry_after_ms;
+};
 
 void validate_identity(const Identity& identity);
 void validate_error_envelope(const ErrorEnvelope& envelope);

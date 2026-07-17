@@ -14,7 +14,10 @@ use elura_adapters::replay::RedisReplayStore;
 #[cfg(feature = "redis")]
 use elura_adapters::session_control::{RedisSessionControlBus, RedisSessionControlConfig};
 #[cfg(feature = "redis")]
-use elura_core::online::{OnlineDirectory, OnlineStats, OnlineStatsReader, SessionLease};
+use elura_core::online::{
+    DuplicateLoginMode, OnlineAdmission, OnlineAdmissionPolicy, OnlineDirectory, OnlineStats,
+    OnlineStatsReader, SessionLease,
+};
 #[cfg(any(feature = "redis", feature = "sql"))]
 use elura_core::outbox::{OutboxEvent, OutboxStore};
 #[cfg(feature = "redis")]
@@ -44,6 +47,11 @@ fn configured_cluster_nodes() -> Option<String> {
         }
         Err(_) => None,
     }
+}
+
+#[cfg(feature = "redis")]
+fn online_policy(duplicate_login: DuplicateLoginMode) -> OnlineAdmissionPolicy {
+    OnlineAdmissionPolicy::new(duplicate_login, None).unwrap()
 }
 
 #[cfg(any(feature = "redis", feature = "sql"))]
@@ -148,7 +156,13 @@ async fn redis_cluster_transport_keeps_multi_key_operations_in_one_slot_when_con
         expires_at: SystemTime::now() + ttl,
     };
 
-    directory.register(lease.clone()).await.unwrap();
+    directory
+        .acquire(
+            lease.clone(),
+            online_policy(DuplicateLoginMode::AllowMultiple),
+        )
+        .await
+        .unwrap();
     directory
         .track_group(session_id, "room:1", true)
         .await
@@ -214,14 +228,13 @@ async fn redis_online_renewal_extends_single_session_claim() {
         identity: identity.clone(),
         expires_at: SystemTime::now() + ttl,
     };
-    assert!(
+    assert!(matches!(
         directory
-            .claim_single(&lease, false)
+            .acquire(lease.clone(), online_policy(DuplicateLoginMode::RejectNew),)
             .await
-            .unwrap()
-            .is_none()
-    );
-    directory.register(lease.clone()).await.unwrap();
+            .unwrap(),
+        OnlineAdmission::Accepted { .. }
+    ));
     tokio::time::sleep(Duration::from_millis(80)).await;
     directory.renew(lease).await.unwrap();
     tokio::time::sleep(Duration::from_millis(80)).await;
@@ -232,9 +245,57 @@ async fn redis_online_renewal_extends_single_session_claim() {
         expires_at: SystemTime::now() + ttl,
     };
     assert_eq!(
-        directory.claim_single(&challenger, false).await.unwrap(),
-        Some(session_id)
+        directory
+            .acquire(challenger, online_policy(DuplicateLoginMode::RejectNew),)
+            .await
+            .unwrap(),
+        OnlineAdmission::Duplicate
     );
+}
+
+#[tokio::test]
+#[cfg(feature = "redis")]
+async fn redis_online_admission_atomically_enforces_realm_capacity() {
+    let Some(url) = configured_url("ELURA_TEST_REDIS_URL") else {
+        return;
+    };
+    let ttl = Duration::from_secs(30);
+    let directory = RedisOnlineDirectory::connect(
+        &url,
+        format!("elura-test-capacity-{}", uuid::Uuid::new_v4()),
+        ttl,
+    )
+    .await
+    .unwrap();
+    let make_lease = |user_id| SessionLease {
+        session_id: uuid::Uuid::new_v4(),
+        gateway_id: "gateway-1".into(),
+        identity: Identity {
+            account_id: user_id,
+            user_id,
+            region_id: 1,
+            realm_id: 1,
+            generation: 1,
+        },
+        expires_at: SystemTime::now() + ttl,
+    };
+    let first = make_lease(1);
+    let second = make_lease(2);
+    let bounded = OnlineAdmissionPolicy::new(DuplicateLoginMode::AllowMultiple, Some(1)).unwrap();
+
+    assert!(matches!(
+        directory.acquire(first.clone(), bounded).await.unwrap(),
+        OnlineAdmission::Accepted { .. }
+    ));
+    assert_eq!(
+        directory.acquire(second.clone(), bounded).await.unwrap(),
+        OnlineAdmission::RealmFull
+    );
+    directory.unregister(&first).await.unwrap();
+    assert!(matches!(
+        directory.acquire(second, bounded).await.unwrap(),
+        OnlineAdmission::Accepted { .. }
+    ));
 }
 
 #[tokio::test]
@@ -273,7 +334,10 @@ async fn redis_online_stats_count_sessions_and_distinct_users() {
     })
     .collect::<Vec<_>>();
     for lease in leases {
-        directory.register(lease).await.unwrap();
+        directory
+            .acquire(lease, online_policy(DuplicateLoginMode::AllowMultiple))
+            .await
+            .unwrap();
     }
     let stats: &dyn OnlineStatsReader = &directory;
 
@@ -325,7 +389,10 @@ async fn redis_online_group_indexes_expire_with_the_session() {
         },
         expires_at: SystemTime::now() + ttl,
     };
-    directory.register(lease).await.unwrap();
+    directory
+        .acquire(lease, online_policy(DuplicateLoginMode::AllowMultiple))
+        .await
+        .unwrap();
     directory
         .track_group(session_id, "room:1", true)
         .await

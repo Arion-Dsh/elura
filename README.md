@@ -22,6 +22,7 @@ or run together as a monolith.
 ## Highlights
 
 - WebSocket and QUIC transports, sessions, routing, middleware, and graceful shutdown.
+- Atomic per-realm Session capacity for application-owned login queues.
 - Distributed Gateway and World deployment or single-process monolith mode.
 - Application-owned infrastructure with optional Redis, SQL, and Kubernetes adapters.
 - Optional identity, notification, OTP, and payment providers.

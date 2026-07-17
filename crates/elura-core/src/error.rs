@@ -22,6 +22,8 @@ pub struct ErrorEnvelope {
     pub code: String,
     pub message: String,
     pub retryable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
 }
 
 impl ErrorEnvelope {
@@ -30,7 +32,14 @@ impl ErrorEnvelope {
             code: code.into(),
             message: message.into(),
             retryable,
+            retry_after_ms: None,
         }
+    }
+
+    /// Adds a client-visible retry delay when it is known.
+    pub fn with_retry_after(mut self, retry_after_ms: u64) -> Self {
+        self.retry_after_ms = (retry_after_ms > 0).then_some(retry_after_ms);
+        self
     }
 
     /// Encodes the envelope as the canonical JSON ELR2 error payload.
@@ -149,8 +158,8 @@ impl From<&Error> for ErrorEnvelope {
             Error::AdmissionDenied {
                 code,
                 reason,
-                retry_after_ms: _,
-            } => Self::new(public_code(code), reason, true),
+                retry_after_ms,
+            } => Self::new(public_code(code), reason, true).with_retry_after(*retry_after_ms),
             Error::Business {
                 code,
                 message,
@@ -280,6 +289,19 @@ mod tests {
         let envelope = ErrorEnvelope::from(&error);
         assert_eq!(envelope.code, "INVENTORY_UNAVAILABLE");
         assert!(envelope.retryable);
+    }
+
+    #[test]
+    fn admission_retry_delay_is_sent_to_clients() {
+        let error = Error::AdmissionDenied {
+            code: "realm_full".into(),
+            reason: "the selected realm is at capacity".into(),
+            retry_after_ms: 1_500,
+        };
+        let envelope = ErrorEnvelope::from_slice(&ErrorEnvelope::from(&error).to_bytes()).unwrap();
+        assert_eq!(envelope.code, "REALM_FULL");
+        assert!(envelope.retryable);
+        assert_eq!(envelope.retry_after_ms, Some(1_500));
     }
 
     #[test]

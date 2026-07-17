@@ -8,7 +8,7 @@ use elura_adapters::online::RedisOnlineDirectory;
 use elura_adapters::replay::RedisReplayStore;
 use elura_core::online::DuplicateLoginMode;
 use elura_gateway::transport::{TcpConfig, TcpTransport};
-use elura_gateway::{Gateway, GatewayConfig, TcpWorldClient};
+use elura_gateway::{Gateway, GatewayConfig, GatewayOnlineConfig, TcpWorldClient};
 use elura_runtime::lifecycle::shutdown_signal;
 use elura_runtime::observability::AdminServerConfig;
 use elura_runtime::security::InternalToken;
@@ -89,11 +89,13 @@ async fn main() -> AnyResult<()> {
         .replay_store(replay)
         .world_client(world)
         .online_directory(
-            gateway_id.clone(),
             online,
-            Duration::from_secs(60),
-            Duration::from_secs(20),
-            DuplicateLoginMode::AllowMultiple,
+            GatewayOnlineConfig::new(
+                gateway_id.clone(),
+                Duration::from_secs(60),
+                Duration::from_secs(20),
+                DuplicateLoginMode::AllowMultiple,
+            ),
         )
         .build()?;
 

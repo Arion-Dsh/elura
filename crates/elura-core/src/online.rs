@@ -32,21 +32,58 @@ pub struct OnlineStats {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[non_exhaustive]
 pub enum DuplicateLoginMode {
     AllowMultiple,
     RejectNew,
     KickExisting,
 }
 
+/// Atomic policy applied while admitting an authenticated Session.
+///
+/// Capacity is scoped to the Session's region and realm. A missing maximum
+/// leaves the realm unbounded, while a configured maximum must be positive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OnlineAdmissionPolicy {
+    pub duplicate_login: DuplicateLoginMode,
+    pub max_sessions: Option<u64>,
+}
+
+impl OnlineAdmissionPolicy {
+    pub fn new(duplicate_login: DuplicateLoginMode, max_sessions: Option<u64>) -> Result<Self> {
+        if max_sessions == Some(0) {
+            return Err(Error::InvalidConfig(
+                "online realm capacity must be positive".into(),
+            ));
+        }
+        Ok(Self {
+            duplicate_login,
+            max_sessions,
+        })
+    }
+}
+
+/// Result of atomically acquiring an online Session slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnlineAdmission {
+    Accepted { previous_session: Option<Uuid> },
+    Duplicate,
+    RealmFull,
+}
+
 #[async_trait]
 /// Shared online-presence contract.
 ///
-/// Implementations must fence unregister/release operations by Gateway and
-/// Session identity, expire leases, and make `claim_single` atomic across all
-/// callers. Query methods must not return expired leases.
+/// Implementations must make [`OnlineDirectory::acquire`] atomic across all
+/// callers, fence renew/unregister operations by Gateway and Session identity,
+/// and expire leases. Query methods must not return expired leases.
 pub trait OnlineDirectory: Send + Sync {
-    async fn register(&self, lease: SessionLease) -> Result<()>;
+    /// Atomically applies duplicate-login and realm-capacity policy, then
+    /// registers the Session when accepted.
+    async fn acquire(
+        &self,
+        lease: SessionLease,
+        policy: OnlineAdmissionPolicy,
+    ) -> Result<OnlineAdmission>;
     async fn renew(&self, lease: SessionLease) -> Result<()>;
     async fn unregister(&self, lease: &SessionLease) -> Result<()>;
     async fn session(&self, session_id: Uuid) -> Result<Option<SessionLease>>;
@@ -58,10 +95,6 @@ pub trait OnlineDirectory: Send + Sync {
     ) -> Result<Vec<SessionLease>>;
     async fn group_sessions(&self, group: &str) -> Result<Vec<SessionLease>>;
     async fn track_group(&self, session_id: Uuid, group: &str, join: bool) -> Result<()>;
-    /// Atomically claims the single-login slot and returns a different current
-    /// owner. When `replace` is false the existing owner must remain unchanged.
-    async fn claim_single(&self, lease: &SessionLease, replace: bool) -> Result<Option<Uuid>>;
-    async fn release_single(&self, lease: &SessionLease) -> Result<()>;
 }
 
 #[async_trait]
@@ -166,6 +199,7 @@ struct MemoryState {
     sessions: HashMap<Uuid, SessionLease>,
     groups: HashMap<String, HashSet<Uuid>>,
     single: HashMap<(u32, u32, i64), Uuid>,
+    capacity: HashMap<(u32, u32), HashSet<Uuid>>,
 }
 
 impl MemoryOnlineDirectory {
@@ -184,19 +218,77 @@ impl MemoryOnlineDirectory {
             !ids.is_empty()
         });
         state.single.retain(|_, id| live.contains(id));
+        state.capacity.retain(|_, ids| {
+            ids.retain(|id| live.contains(id));
+            !ids.is_empty()
+        });
     }
 }
 
 #[async_trait]
 impl OnlineDirectory for MemoryOnlineDirectory {
-    async fn register(&self, lease: SessionLease) -> Result<()> {
+    async fn acquire(
+        &self,
+        lease: SessionLease,
+        policy: OnlineAdmissionPolicy,
+    ) -> Result<OnlineAdmission> {
         lease.identity.validate()?;
-        self.lock()?.sessions.insert(lease.session_id, lease);
-        Ok(())
+        let policy = OnlineAdmissionPolicy::new(policy.duplicate_login, policy.max_sessions)?;
+        let mut state = self.lock()?;
+        Self::purge(&mut state);
+        let identity = &lease.identity;
+        let user_key = (identity.region_id, identity.realm_id, identity.user_id);
+        let realm_key = (identity.region_id, identity.realm_id);
+        let previous = state
+            .single
+            .get(&user_key)
+            .copied()
+            .filter(|id| *id != lease.session_id);
+
+        if policy.duplicate_login == DuplicateLoginMode::RejectNew && previous.is_some() {
+            return Ok(OnlineAdmission::Duplicate);
+        }
+
+        let slots = state.capacity.entry(realm_key).or_default();
+        let transfers_slot = policy.duplicate_login == DuplicateLoginMode::KickExisting
+            && previous.is_some_and(|id| slots.contains(&id));
+        let used = slots.len().saturating_sub(usize::from(transfers_slot)) as u64;
+        if !slots.contains(&lease.session_id)
+            && policy.max_sessions.is_some_and(|maximum| used >= maximum)
+        {
+            return Ok(OnlineAdmission::RealmFull);
+        }
+
+        match policy.duplicate_login {
+            DuplicateLoginMode::AllowMultiple => {}
+            DuplicateLoginMode::RejectNew | DuplicateLoginMode::KickExisting => {
+                state.single.insert(user_key, lease.session_id);
+            }
+        }
+        let slots = state.capacity.entry(realm_key).or_default();
+        if transfers_slot && let Some(previous) = previous {
+            slots.remove(&previous);
+        }
+        slots.insert(lease.session_id);
+        state.sessions.insert(lease.session_id, lease);
+        Ok(OnlineAdmission::Accepted {
+            previous_session: (policy.duplicate_login == DuplicateLoginMode::KickExisting)
+                .then_some(previous)
+                .flatten(),
+        })
     }
 
     async fn renew(&self, lease: SessionLease) -> Result<()> {
-        self.register(lease).await
+        lease.identity.validate()?;
+        let mut state = self.lock()?;
+        Self::purge(&mut state);
+        match state.sessions.get(&lease.session_id) {
+            Some(current) if current.gateway_id == lease.gateway_id => {
+                state.sessions.insert(lease.session_id, lease);
+                Ok(())
+            }
+            _ => Err(Error::SessionRevoked),
+        }
     }
 
     async fn unregister(&self, lease: &SessionLease) -> Result<()> {
@@ -209,6 +301,15 @@ impl OnlineDirectory for MemoryOnlineDirectory {
             state.sessions.remove(&lease.session_id);
             for ids in state.groups.values_mut() {
                 ids.remove(&lease.session_id);
+            }
+            let identity = &lease.identity;
+            let realm_key = (identity.region_id, identity.realm_id);
+            if let Some(ids) = state.capacity.get_mut(&realm_key) {
+                ids.remove(&lease.session_id);
+            }
+            let user_key = (identity.region_id, identity.realm_id, identity.user_id);
+            if state.single.get(&user_key) == Some(&lease.session_id) {
+                state.single.remove(&user_key);
             }
         }
         Ok(())
@@ -262,28 +363,6 @@ impl OnlineDirectory for MemoryOnlineDirectory {
         }
         Ok(())
     }
-
-    async fn claim_single(&self, lease: &SessionLease, replace: bool) -> Result<Option<Uuid>> {
-        let mut state = self.lock()?;
-        Self::purge(&mut state);
-        let identity = &lease.identity;
-        let key = (identity.region_id, identity.realm_id, identity.user_id);
-        let previous = state.single.get(&key).copied();
-        if previous.is_none() || replace {
-            state.single.insert(key, lease.session_id);
-        }
-        Ok(previous.filter(|id| *id != lease.session_id))
-    }
-
-    async fn release_single(&self, lease: &SessionLease) -> Result<()> {
-        let mut state = self.lock()?;
-        let identity = &lease.identity;
-        let key = (identity.region_id, identity.realm_id, identity.user_id);
-        if state.single.get(&key) == Some(&lease.session_id) {
-            state.single.remove(&key);
-        }
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -330,27 +409,64 @@ mod tests {
         }
     }
 
+    fn policy(duplicate_login: DuplicateLoginMode) -> OnlineAdmissionPolicy {
+        OnlineAdmissionPolicy::new(duplicate_login, None).unwrap()
+    }
+
     #[tokio::test]
-    async fn claims_and_fences_single_session() {
+    async fn atomically_applies_duplicate_login_policy() {
         let directory = MemoryOnlineDirectory::default();
         let first = lease(Uuid::new_v4());
         let second = lease(Uuid::new_v4());
-        directory.register(first.clone()).await.unwrap();
-        assert_eq!(directory.claim_single(&first, false).await.unwrap(), None);
         assert_eq!(
-            directory.claim_single(&second, false).await.unwrap(),
-            Some(first.session_id)
+            directory
+                .acquire(first.clone(), policy(DuplicateLoginMode::RejectNew))
+                .await
+                .unwrap(),
+            OnlineAdmission::Accepted {
+                previous_session: None
+            }
         );
         assert_eq!(
-            directory.claim_single(&second, true).await.unwrap(),
-            Some(first.session_id)
+            directory
+                .acquire(second.clone(), policy(DuplicateLoginMode::RejectNew))
+                .await
+                .unwrap(),
+            OnlineAdmission::Duplicate
         );
-        directory.register(second.clone()).await.unwrap();
-        directory.release_single(&first).await.unwrap();
         assert_eq!(
-            directory.claim_single(&first, false).await.unwrap(),
-            Some(second.session_id)
+            directory
+                .acquire(second, policy(DuplicateLoginMode::KickExisting))
+                .await
+                .unwrap(),
+            OnlineAdmission::Accepted {
+                previous_session: Some(first.session_id)
+            }
         );
+    }
+
+    #[tokio::test]
+    async fn atomically_enforces_realm_capacity_and_releases_slots() {
+        let directory = MemoryOnlineDirectory::default();
+        let first = lease(Uuid::new_v4());
+        let mut second = lease(Uuid::new_v4());
+        second.identity.user_id = 3;
+        let bounded =
+            OnlineAdmissionPolicy::new(DuplicateLoginMode::AllowMultiple, Some(1)).unwrap();
+
+        assert!(matches!(
+            directory.acquire(first.clone(), bounded).await.unwrap(),
+            OnlineAdmission::Accepted { .. }
+        ));
+        assert_eq!(
+            directory.acquire(second.clone(), bounded).await.unwrap(),
+            OnlineAdmission::RealmFull
+        );
+        directory.unregister(&first).await.unwrap();
+        assert!(matches!(
+            directory.acquire(second, bounded).await.unwrap(),
+            OnlineAdmission::Accepted { .. }
+        ));
     }
 
     #[tokio::test]
@@ -359,8 +475,14 @@ mod tests {
         let first = lease(Uuid::new_v4());
         let mut second = lease(Uuid::new_v4());
         second.gateway_id = "gateway-b".into();
-        directory.register(first.clone()).await.unwrap();
-        directory.register(second.clone()).await.unwrap();
+        directory
+            .acquire(first.clone(), policy(DuplicateLoginMode::AllowMultiple))
+            .await
+            .unwrap();
+        directory
+            .acquire(second.clone(), policy(DuplicateLoginMode::AllowMultiple))
+            .await
+            .unwrap();
         let resolver = OnlineDirectoryTargetResolver::new(directory);
 
         let request = PushRequest {
@@ -414,7 +536,10 @@ mod tests {
         expired.expires_at = SystemTime::now() - Duration::from_secs(1);
 
         for lease in [first, second, third, other_realm, expired] {
-            directory.register(lease).await.unwrap();
+            directory
+                .acquire(lease, policy(DuplicateLoginMode::AllowMultiple))
+                .await
+                .unwrap();
         }
         let stats: &dyn OnlineStatsReader = &directory;
 
@@ -442,7 +567,10 @@ mod tests {
         let stats: Arc<dyn OnlineStatsReader> = backend;
         let lease = lease(Uuid::new_v4());
 
-        directory.register(lease.clone()).await.unwrap();
+        directory
+            .acquire(lease.clone(), policy(DuplicateLoginMode::AllowMultiple))
+            .await
+            .unwrap();
 
         assert_eq!(
             directory

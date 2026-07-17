@@ -29,7 +29,12 @@ export interface AuthenticateResponse {
   identity: Identity;
   reconnect: ReconnectTicketResponse;
 }
-export interface ErrorEnvelope { code: string; message: string; retryable: boolean }
+export interface ErrorEnvelope {
+  code: string;
+  message: string;
+  retryable: boolean;
+  retry_after_ms?: number;
+}
 
 const utf8 = new TextEncoder();
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
@@ -114,6 +119,9 @@ export function decodeErrorEnvelope(payload: Uint8Array): ErrorEnvelope {
     code: stringField(value.code, "error code"),
     message: stringField(value.message, "error message"),
     retryable: value.retryable,
+    retry_after_ms: value.retry_after_ms === undefined
+      ? undefined
+      : safeInteger(value.retry_after_ms, "retry_after_ms", true),
   };
   if (typeof envelope.retryable !== "boolean" || !/^[A-Z0-9_]{1,64}$/.test(envelope.code) ||
       utf8.encode(envelope.message).byteLength > 1024) {

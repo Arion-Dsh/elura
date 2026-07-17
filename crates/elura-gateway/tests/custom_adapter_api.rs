@@ -8,7 +8,9 @@ use elura_core::account_version::{
     AccountVersionKey, AccountVersionStore, MutableAccountVersionStore,
 };
 use elura_core::gateway_world::{WorldClient, WorldDiscovery, WorldRequest, WorldRouteUpdater};
-use elura_core::online::{DuplicateLoginMode, OnlineDirectory, SessionLease};
+use elura_core::online::{
+    DuplicateLoginMode, OnlineAdmission, OnlineAdmissionPolicy, OnlineDirectory, SessionLease,
+};
 use elura_core::ownership::{Assignment, OwnershipResolver};
 use elura_core::push::{PushHandler, PushReceipt, PushRequest, PushTransport};
 use elura_core::session::{
@@ -81,8 +83,14 @@ struct ApplicationOnlineDirectory;
 
 #[async_trait]
 impl OnlineDirectory for ApplicationOnlineDirectory {
-    async fn register(&self, _lease: SessionLease) -> Result<()> {
-        Ok(())
+    async fn acquire(
+        &self,
+        _lease: SessionLease,
+        _policy: OnlineAdmissionPolicy,
+    ) -> Result<OnlineAdmission> {
+        Ok(OnlineAdmission::Accepted {
+            previous_session: None,
+        })
     }
 
     async fn renew(&self, _lease: SessionLease) -> Result<()> {
@@ -111,14 +119,6 @@ impl OnlineDirectory for ApplicationOnlineDirectory {
     }
 
     async fn track_group(&self, _session_id: Uuid, _group: &str, _join: bool) -> Result<()> {
-        Ok(())
-    }
-
-    async fn claim_single(&self, _lease: &SessionLease, _replace: bool) -> Result<Option<Uuid>> {
-        Ok(None)
-    }
-
-    async fn release_single(&self, _lease: &SessionLease) -> Result<()> {
         Ok(())
     }
 }
@@ -235,11 +235,13 @@ fn application_can_inject_its_own_gateway_adapters() {
     let _gateway = Gateway::new(GatewayConfig::default())
         .replay_store(Arc::new(ApplicationReplayStore))
         .online_directory(
-            "gateway-1",
             Arc::new(ApplicationOnlineDirectory),
-            Duration::from_secs(60),
-            Duration::from_secs(20),
-            DuplicateLoginMode::RejectNew,
+            elura_gateway::GatewayOnlineConfig::new(
+                "gateway-1",
+                Duration::from_secs(60),
+                Duration::from_secs(20),
+                DuplicateLoginMode::RejectNew,
+            ),
         )
         .push_transport(Arc::new(ApplicationPushTransport))
         .session_control_transport(Arc::new(ApplicationSessionControlTransport))

@@ -17,7 +17,9 @@ pub use elura_core::gateway_world::{
     GatewayWorldRoutingConfig, WorldClient, WorldDiscovery, WorldRequest, WorldRouteTarget,
     WorldRouteUpdater,
 };
-use elura_core::online::{DuplicateLoginMode, OnlineDirectory, SessionLease};
+use elura_core::online::{
+    DuplicateLoginMode, OnlineAdmission, OnlineAdmissionPolicy, OnlineDirectory, SessionLease,
+};
 use elura_core::ownership::{OwnershipResolver, shard_for};
 use elura_core::protocol::{
     FIRST_APPLICATION_ROUTE, Frame, FrameCodec, FrameKind, HEADER_LEN, ROUTE_AUTHENTICATE,
@@ -66,7 +68,8 @@ pub use interceptor::{
 };
 
 pub use builder::{
-    GatewayInfrastructure, GatewayRealmAdmissionConfig, GatewayTicketConfig, GatewayWorldTlsConfig,
+    GatewayInfrastructure, GatewayOnlineConfig, GatewayRealmAdmissionConfig, GatewayTicketConfig,
+    GatewayWorldTlsConfig, RealmCapacityLimit,
 };
 pub(crate) use routing::{MemoryWorldRouteDirectory, RouteWorldClient};
 
@@ -726,11 +729,8 @@ impl Drop for ActiveGatewayConnection<'_> {
 
 #[derive(Clone)]
 struct OnlineConfig {
-    gateway_id: Arc<str>,
     directory: Arc<dyn OnlineDirectory>,
-    lease_ttl: Duration,
-    renew_interval: Duration,
-    duplicate_login: DuplicateLoginMode,
+    config: GatewayOnlineConfig,
 }
 
 struct NamedReadinessProbe {
@@ -905,29 +905,11 @@ impl GatewayServer {
 
     pub fn with_online_directory(
         mut self,
-        gateway_id: impl Into<Arc<str>>,
         directory: Arc<dyn OnlineDirectory>,
-        lease_ttl: Duration,
-        renew_interval: Duration,
-        duplicate_login: DuplicateLoginMode,
+        config: GatewayOnlineConfig,
     ) -> Result<Self> {
-        let gateway_id = gateway_id.into();
-        if gateway_id.is_empty()
-            || lease_ttl.is_zero()
-            || renew_interval.is_zero()
-            || renew_interval >= lease_ttl
-        {
-            return Err(Error::InvalidConfig(
-                "online lease requires an id and 0 < renew interval < TTL".into(),
-            ));
-        }
-        self.online = Some(OnlineConfig {
-            gateway_id,
-            directory,
-            lease_ttl,
-            renew_interval,
-            duplicate_login,
-        });
+        config.validate()?;
+        self.online = Some(OnlineConfig { directory, config });
         Ok(self)
     }
 
@@ -1466,7 +1448,9 @@ impl ConnectionContext {
             let renew_interval = self
                 .online
                 .as_ref()
-                .map_or(Duration::from_secs(3600), |online| online.renew_interval);
+                .map_or(Duration::from_secs(3600), |online| {
+                    online.config.renew_interval
+                });
             let mut renewal = tokio::time::interval_at(
                 tokio::time::Instant::now() + renew_interval,
                 renew_interval,
@@ -1725,10 +1709,16 @@ impl ConnectionContext {
                 if let Some(policy) = &self.account_versions {
                     policy.check(&pending_identity).await?;
                 }
-                let claims = verified.consume(self.replay.as_ref()).await?;
                 let previous = self
-                    .admit_online(session.id(), claims.identity.clone())
+                    .admit_online(session.id(), pending_identity.clone())
                     .await?;
+                let claims = match verified.consume(self.replay.as_ref()).await {
+                    Ok(claims) => claims,
+                    Err(error) => {
+                        self.remove_online(session.id(), pending_identity).await;
+                        return Err(error);
+                    }
+                };
                 session.authenticate(claims.identity.clone())?;
                 authenticated.store(true, Ordering::Release);
                 self.stats
@@ -1847,48 +1837,33 @@ impl ConnectionContext {
     fn lease(&self, session_id: Uuid, identity: Identity) -> Option<SessionLease> {
         self.online.as_ref().map(|online| SessionLease {
             session_id,
-            gateway_id: online.gateway_id.to_string(),
+            gateway_id: online.config.gateway_id.clone(),
             identity,
-            expires_at: SystemTime::now() + online.lease_ttl,
+            expires_at: SystemTime::now() + online.config.lease_ttl,
         })
     }
 
     async fn admit_online(&self, session_id: Uuid, identity: Identity) -> Result<Vec<Uuid>> {
-        let local: Vec<_> = self
-            .session_index
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .users
-            .get(&identity_key(&identity))
-            .map(|sessions| sessions.iter().copied().collect())
-            .unwrap_or_default();
         let Some(online) = &self.online else {
-            return Ok(local);
+            return Ok(Vec::new());
         };
-        if online.duplicate_login == DuplicateLoginMode::RejectNew && !local.is_empty() {
-            return Err(Error::DuplicateSession);
-        }
+        let maximum = online
+            .config
+            .max_sessions(identity.region_id, identity.realm_id);
+        let policy = OnlineAdmissionPolicy::new(online.config.duplicate_login, maximum)?;
         let lease = self.lease(session_id, identity).ok_or(Error::Unavailable)?;
-        let mut previous = local;
-        if online.duplicate_login != DuplicateLoginMode::AllowMultiple {
-            let remote = online
-                .directory
-                .claim_single(
-                    &lease,
-                    online.duplicate_login == DuplicateLoginMode::KickExisting,
-                )
-                .await?;
-            if online.duplicate_login == DuplicateLoginMode::RejectNew && remote.is_some() {
-                return Err(Error::DuplicateSession);
+        match online.directory.acquire(lease, policy).await? {
+            OnlineAdmission::Accepted { previous_session } => {
+                Ok(previous_session.into_iter().collect())
             }
-            if let Some(remote) = remote {
-                previous.push(remote);
-            }
+            OnlineAdmission::Duplicate => Err(Error::DuplicateSession),
+            OnlineAdmission::RealmFull => Err(Error::AdmissionDenied {
+                code: "realm_full".into(),
+                reason: "the selected realm is at capacity".into(),
+                retry_after_ms: u64::try_from(online.config.full_retry_after.as_millis())
+                    .unwrap_or(u64::MAX),
+            }),
         }
-        online.directory.register(lease).await?;
-        previous.sort_unstable();
-        previous.dedup();
-        Ok(previous)
     }
 
     async fn renew_lease(&self, session_id: Uuid, identity: Identity) -> Result<()> {
@@ -1903,7 +1878,11 @@ impl ConnectionContext {
 
     fn lease_safety_deadline(&self) -> Option<tokio::time::Instant> {
         self.online.as_ref().map(|online| {
-            tokio::time::Instant::now() + online.lease_ttl.saturating_sub(online.renew_interval)
+            tokio::time::Instant::now()
+                + online
+                    .config
+                    .lease_ttl
+                    .saturating_sub(online.config.renew_interval)
         })
     }
 
@@ -1917,17 +1896,13 @@ impl ConnectionContext {
         if let Err(error) = online.directory.unregister(&lease).await {
             debug!(%session_id, %error, "unregister online session");
         }
-        if let Err(error) = online.directory.release_single(&lease).await {
-            debug!(%session_id, %error, "release single-session claim");
-        }
     }
 
     async fn kick_previous(&self, sessions: Vec<Uuid>, identity: &Identity) {
         if sessions.is_empty()
-            || self
-                .online
-                .as_ref()
-                .is_none_or(|online| online.duplicate_login != DuplicateLoginMode::KickExisting)
+            || self.online.as_ref().is_none_or(|online| {
+                online.config.duplicate_login != DuplicateLoginMode::KickExisting
+            })
         {
             return;
         }

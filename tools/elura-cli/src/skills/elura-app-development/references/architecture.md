@@ -25,6 +25,36 @@ service for a new login ticket using the application-owned refresh session. Only
 revocation of that refresh session should require interactive login. Elura intentionally does not
 store refresh tokens, device login sessions, or credential-provider state in Gateway.
 
+## Login queue and realm capacity
+
+The application login service owns queue order, priority, queue tokens, wait estimates, and the
+client polling or notification API. A queued client should not hold an anonymous Gateway
+connection: Gateway authentication has a short deadline, and login tickets should be issued only
+when the application decides that the client may attempt admission.
+
+Gateway owns the final hard-cap check. Configure an online directory with per-realm limits; its
+single atomic `OnlineDirectory::acquire` operation applies duplicate-login policy, checks the realm
+capacity, and registers the accepted Session. This prevents concurrent login services or Gateway
+processes from oversubscribing a realm after observing the same online count.
+
+```rust
+let online = GatewayOnlineConfig::new(
+    "gateway-1",
+    Duration::from_secs(60),
+    Duration::from_secs(20),
+    DuplicateLoginMode::RejectNew,
+)
+.with_realm_capacity(1, 1, 10_000);
+
+let gateway = Gateway::new(config)
+    .online_directory(directory, online);
+```
+
+When full, Gateway returns the retryable `REALM_FULL` client error with `retry_after_ms`. The
+rejected login ticket is not consumed, so the client can retry it after the queue service grants
+admission or the retry delay elapses. Treat online statistics as advisory UI data; only the atomic
+acquire result is authoritative.
+
 Monolith uses the same Gateway and World configuration models but connects them in process. Standalone World networking, internal authorization, and World TLS are not started by `Monolith`.
 
 ## Cargo feature selection

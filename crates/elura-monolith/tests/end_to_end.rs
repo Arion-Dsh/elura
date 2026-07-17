@@ -6,7 +6,7 @@ use std::time::Duration;
 use bytes::{Bytes, BytesMut};
 use elura_core::ErrorEnvelope;
 use elura_core::account_version::{AccountVersionKey, AccountVersionStore};
-use elura_core::online::{DuplicateLoginMode, MemoryOnlineDirectory};
+use elura_core::online::{DuplicateLoginMode, MemoryOnlineDirectory, OnlineStatsReader};
 use elura_core::protocol::{
     FIRST_APPLICATION_ROUTE, Frame, FrameCodec, FrameKind, PROTOCOL_IDENTIFIER, ROUTE_AUTHENTICATE,
     ROUTE_HEARTBEAT, ROUTE_RECONNECT, ROUTE_SESSION_CONTROL, SessionControl, SessionControlAction,
@@ -22,9 +22,9 @@ use elura_gateway::transport::{
     SessionEventKind, TcpConfig, TcpTransport, TrustedProxies, WebSocketConfig,
 };
 use elura_gateway::{
-    GatewayConfig, GatewayInterceptContext, GatewayInterceptor, GatewayNext, GatewayRequest,
-    GatewayResponse, GatewayServer as Gateway, RouteRateLimit, TcpWorldClient, WorldClient,
-    WorldRequest,
+    GatewayConfig, GatewayInterceptContext, GatewayInterceptor, GatewayNext, GatewayOnlineConfig,
+    GatewayRequest, GatewayResponse, GatewayServer as Gateway, RouteRateLimit, TcpWorldClient,
+    WorldClient, WorldRequest,
 };
 use elura_monolith::Monolith;
 use elura_runtime::observability::AdminServerConfig;
@@ -1088,6 +1088,123 @@ async fn receive_websocket(
 }
 
 #[tokio::test]
+async fn gateway_enforces_realm_capacity_atomically_and_allows_retry() {
+    let gateway_address = free_address();
+    let tickets = Arc::new(
+        TicketService::new(
+            [21_u8; 32],
+            "test-auth",
+            "test-gateway",
+            Duration::from_secs(60),
+            Duration::from_secs(1_800),
+        )
+        .unwrap(),
+    );
+    let first_ticket = tickets
+        .issue_login(Identity {
+            account_id: 1,
+            user_id: 1,
+            region_id: 1,
+            realm_id: 1,
+            generation: 1,
+        })
+        .unwrap();
+    let second_ticket = tickets
+        .issue_login(Identity {
+            account_id: 2,
+            user_id: 2,
+            region_id: 1,
+            realm_id: 1,
+            generation: 1,
+        })
+        .unwrap();
+    let directory = Arc::new(MemoryOnlineDirectory::default());
+    let online = GatewayOnlineConfig::new(
+        "gateway-capacity-test",
+        Duration::from_secs(30),
+        Duration::from_secs(10),
+        DuplicateLoginMode::AllowMultiple,
+    )
+    .with_realm_capacity(1, 1, 1);
+    let gateway = Gateway::new(
+        GatewayConfig::default(),
+        tickets,
+        Arc::new(MemoryReplayStore::default()),
+        Arc::new(NeverWorld),
+    )
+    .unwrap()
+    .with_transport(tcp(gateway_address))
+    .unwrap()
+    .with_online_directory(directory.clone(), online)
+    .unwrap();
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let gateway_task = tokio::spawn(Arc::new(gateway).serve_embedded(shutdown_rx));
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let mut first = Framed::new(
+        TcpStream::connect(gateway_address).await.unwrap(),
+        FrameCodec::default(),
+    );
+    first
+        .send(
+            Frame::request(
+                ROUTE_AUTHENTICATE,
+                1,
+                serde_json::to_vec(&serde_json::json!({ "ticket": first_ticket })).unwrap(),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        first.next().await.unwrap().unwrap().kind,
+        FrameKind::Response
+    );
+
+    let mut second = Framed::new(
+        TcpStream::connect(gateway_address).await.unwrap(),
+        FrameCodec::default(),
+    );
+    let authentication = |request_id| {
+        Frame::request(
+            ROUTE_AUTHENTICATE,
+            request_id,
+            serde_json::to_vec(&serde_json::json!({ "ticket": second_ticket })).unwrap(),
+        )
+        .unwrap()
+    };
+    second.send(authentication(1)).await.unwrap();
+    let full = second.next().await.unwrap().unwrap();
+    assert_eq!(full.kind, FrameKind::Error);
+    let error = ErrorEnvelope::from_slice(&full.payload).unwrap();
+    assert_eq!(error.code, "REALM_FULL");
+    assert_eq!(error.retry_after_ms, Some(1_000));
+
+    drop(first);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if directory.stats(1, 1).await.unwrap().session_count == 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    second.send(authentication(2)).await.unwrap();
+    assert_eq!(
+        second.next().await.unwrap().unwrap().kind,
+        FrameKind::Response
+    );
+
+    drop(second);
+    shutdown_tx.send(true).unwrap();
+    gateway_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn ticket_gateway_world_round_trip() {
     let world_address = free_address();
     let gateway_address = free_address();
@@ -1138,11 +1255,13 @@ async fn ticket_gateway_world_round_trip() {
     .with_transport(tcp(gateway_address))
     .unwrap()
     .with_online_directory(
-        "gateway-test",
         Arc::new(MemoryOnlineDirectory::default()),
-        Duration::from_secs(30),
-        Duration::from_secs(10),
-        DuplicateLoginMode::KickExisting,
+        elura_gateway::GatewayOnlineConfig::new(
+            "gateway-test",
+            Duration::from_secs(30),
+            Duration::from_secs(10),
+            DuplicateLoginMode::KickExisting,
+        ),
     )
     .unwrap();
 

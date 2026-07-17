@@ -1,5 +1,8 @@
 use async_trait::async_trait;
-use elura_core::online::{OnlineDirectory, OnlineStats, OnlineStatsReader, SessionLease};
+use elura_core::online::{
+    DuplicateLoginMode, OnlineAdmission, OnlineAdmissionPolicy, OnlineDirectory, OnlineStats,
+    OnlineStatsReader, SessionLease,
+};
 use elura_core::{Error, Result};
 use elura_runtime::observability::ReadinessProbe;
 use std::collections::HashSet;
@@ -19,12 +22,24 @@ pub struct RedisOnlineDirectory {
 
 #[async_trait]
 impl OnlineDirectory for RedisOnlineDirectory {
-    async fn register(&self, lease: SessionLease) -> Result<()> {
-        RedisOnlineDirectory::register(self, lease).await
+    async fn acquire(
+        &self,
+        lease: SessionLease,
+        policy: OnlineAdmissionPolicy,
+    ) -> Result<OnlineAdmission> {
+        RedisOnlineDirectory::acquire(self, lease, policy).await
     }
 
     async fn renew(&self, lease: SessionLease) -> Result<()> {
-        RedisOnlineDirectory::register(self, lease).await
+        if self
+            .session(lease.session_id)
+            .await?
+            .is_some_and(|current| current.gateway_id == lease.gateway_id)
+        {
+            RedisOnlineDirectory::renew(self, lease).await
+        } else {
+            Err(Error::SessionRevoked)
+        }
     }
 
     async fn unregister(&self, lease: &SessionLease) -> Result<()> {
@@ -52,28 +67,6 @@ impl OnlineDirectory for RedisOnlineDirectory {
 
     async fn track_group(&self, session_id: Uuid, group: &str, join: bool) -> Result<()> {
         self.track(session_id, group, join).await
-    }
-
-    async fn claim_single(&self, lease: &SessionLease, replace: bool) -> Result<Option<Uuid>> {
-        RedisOnlineDirectory::claim_single(self, lease, replace).await
-    }
-
-    async fn release_single(&self, lease: &SessionLease) -> Result<()> {
-        let key = self.key(&format!(
-            "single:{}:{}:{}",
-            lease.identity.region_id, lease.identity.realm_id, lease.identity.user_id
-        ));
-        let script = redis::Script::new(
-            "if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('DEL',KEYS[1]) end return 0",
-        );
-        let mut connection = self.connection.clone();
-        script
-            .key(key)
-            .arg(lease.session_id.to_string())
-            .invoke_async::<i64>(&mut connection)
-            .await
-            .map_err(err)?;
-        Ok(())
     }
 }
 
@@ -144,8 +137,13 @@ impl RedisOnlineDirectory {
         &self.prefix
     }
 
-    pub async fn register(&self, mut lease: SessionLease) -> Result<()> {
+    pub async fn acquire(
+        &self,
+        mut lease: SessionLease,
+        policy: OnlineAdmissionPolicy,
+    ) -> Result<OnlineAdmission> {
         lease.identity.validate()?;
+        let policy = OnlineAdmissionPolicy::new(policy.duplicate_login, policy.max_sessions)?;
         lease.expires_at = SystemTime::now() + self.ttl;
         let payload = serde_json::to_vec(&lease)?;
         let user = self.key(&format!(
@@ -161,23 +159,149 @@ impl RedisOnlineDirectory {
             "realm:{}:{}",
             lease.identity.region_id, lease.identity.realm_id
         ));
+        let capacity = self.key(&format!(
+            "capacity:{}:{}",
+            lease.identity.region_id, lease.identity.realm_id
+        ));
         let script = redis::Script::new(
-            "redis.call('SET',KEYS[1],ARGV[1],'PX',ARGV[3]);redis.call('SADD',KEYS[2],ARGV[2]);redis.call('PEXPIRE',KEYS[2],ARGV[3]);if redis.call('GET',KEYS[3])==ARGV[2] then redis.call('PEXPIRE',KEYS[3],ARGV[3]) end;local groups=redis.call('SMEMBERS',KEYS[4]);if #groups>0 then redis.call('PEXPIRE',KEYS[4],ARGV[3]);for _,group in ipairs(groups) do redis.call('PEXPIRE',group,ARGV[3]) end end;redis.call('SADD',KEYS[5],ARGV[2]);redis.call('PEXPIRE',KEYS[5],ARGV[3]);return 1",
+            r#"
+local session_id = ARGV[2]
+local ttl = ARGV[3]
+local mode = ARGV[4]
+local maximum = tonumber(ARGV[5])
+local session_prefix = ARGV[6]
+local previous = redis.call('GET', KEYS[3])
+
+if previous == session_id then previous = false end
+if previous and redis.call('EXISTS', session_prefix .. previous) == 0 then
+  redis.call('DEL', KEYS[3])
+  redis.call('SREM', KEYS[6], previous)
+  previous = false
+end
+if mode == 'reject_new' and previous then
+  return {'duplicate', previous}
+end
+
+local used = 0
+for _, id in ipairs(redis.call('SMEMBERS', KEYS[6])) do
+  if redis.call('EXISTS', session_prefix .. id) == 1 then
+    used = used + 1
+  else
+    redis.call('SREM', KEYS[6], id)
+  end
+end
+local transfers = mode == 'kick_existing' and previous
+  and redis.call('SISMEMBER', KEYS[6], previous) == 1
+if transfers then used = used - 1 end
+local already = redis.call('SISMEMBER', KEYS[6], session_id) == 1
+if maximum > 0 and not already and used >= maximum then
+  return {'full', ''}
+end
+
+if transfers then redis.call('SREM', KEYS[6], previous) end
+redis.call('SET', KEYS[1], ARGV[1], 'PX', ttl)
+redis.call('SADD', KEYS[2], session_id)
+redis.call('PEXPIRE', KEYS[2], ttl)
+if mode ~= 'allow_multiple' then
+  redis.call('SET', KEYS[3], session_id, 'PX', ttl)
+end
+local groups = redis.call('SMEMBERS', KEYS[4])
+if #groups > 0 then
+  redis.call('PEXPIRE', KEYS[4], ttl)
+  for _, group in ipairs(groups) do redis.call('PEXPIRE', group, ttl) end
+end
+redis.call('SADD', KEYS[5], session_id)
+redis.call('PEXPIRE', KEYS[5], ttl)
+redis.call('SADD', KEYS[6], session_id)
+redis.call('PEXPIRE', KEYS[6], ttl)
+if mode == 'kick_existing' then return {'accepted', previous or ''} end
+return {'accepted', ''}
+"#,
         );
         let mut c = self.connection.clone();
-        script
+        let result: Vec<String> = script
             .key(session)
             .key(user)
             .key(single)
             .key(self.key(&format!("session-groups:{}", lease.session_id)))
             .key(realm)
+            .key(capacity)
             .arg(payload)
             .arg(lease.session_id.to_string())
             .arg(self.ttl.as_millis())
-            .invoke_async::<i64>(&mut c)
+            .arg(match policy.duplicate_login {
+                DuplicateLoginMode::AllowMultiple => "allow_multiple",
+                DuplicateLoginMode::RejectNew => "reject_new",
+                DuplicateLoginMode::KickExisting => "kick_existing",
+            })
+            .arg(policy.max_sessions.unwrap_or(0))
+            .arg(self.key("session:"))
+            .invoke_async(&mut c)
             .await
-            .map(|_| ())
-            .map_err(err)
+            .map_err(err)?;
+        match result.as_slice() {
+            [status, _] if status == "duplicate" => Ok(OnlineAdmission::Duplicate),
+            [status, _] if status == "full" => Ok(OnlineAdmission::RealmFull),
+            [status, previous] if status == "accepted" => Ok(OnlineAdmission::Accepted {
+                previous_session: Uuid::parse_str(previous).ok(),
+            }),
+            _ => Err(Error::Internal(
+                "invalid Redis online admission response".into(),
+            )),
+        }
+    }
+
+    pub async fn renew(&self, mut lease: SessionLease) -> Result<()> {
+        lease.identity.validate()?;
+        lease.expires_at = SystemTime::now() + self.ttl;
+        let payload = serde_json::to_vec(&lease)?;
+        let identity = &lease.identity;
+        let script = redis::Script::new(
+            r#"
+if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
+redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[3])
+redis.call('PEXPIRE', KEYS[2], ARGV[3])
+if redis.call('GET', KEYS[3]) == ARGV[2] then redis.call('PEXPIRE', KEYS[3], ARGV[3]) end
+redis.call('PEXPIRE', KEYS[4], ARGV[3])
+redis.call('PEXPIRE', KEYS[5], ARGV[3])
+redis.call('PEXPIRE', KEYS[6], ARGV[3])
+for _, group in ipairs(redis.call('SMEMBERS', KEYS[4])) do
+  redis.call('PEXPIRE', group, ARGV[3])
+end
+return 1
+"#,
+        );
+        let mut connection = self.connection.clone();
+        let renewed: i64 = script
+            .key(self.key(&format!("session:{}", lease.session_id)))
+            .key(self.key(&format!(
+                "user:{}:{}:{}",
+                identity.region_id, identity.realm_id, identity.user_id
+            )))
+            .key(self.key(&format!(
+                "single:{}:{}:{}",
+                identity.region_id, identity.realm_id, identity.user_id
+            )))
+            .key(self.key(&format!("session-groups:{}", lease.session_id)))
+            .key(self.key(&format!(
+                "realm:{}:{}",
+                identity.region_id, identity.realm_id
+            )))
+            .key(self.key(&format!(
+                "capacity:{}:{}",
+                identity.region_id, identity.realm_id
+            )))
+            .arg(payload)
+            .arg(lease.session_id.to_string())
+            .arg(self.ttl.as_millis())
+            .invoke_async(&mut connection)
+            .await
+            .map_err(err)?;
+        if renewed == 1 {
+            Ok(())
+        } else {
+            Err(Error::SessionRevoked)
+        }
     }
     pub async fn session(&self, id: Uuid) -> Result<Option<SessionLease>> {
         let mut c = self.connection.clone();
@@ -191,7 +315,9 @@ impl RedisOnlineDirectory {
             .transpose()
     }
     pub async fn remove(&self, id: Uuid) -> Result<()> {
-        let lease = self.session(id).await?;
+        let Some(lease) = self.session(id).await? else {
+            return Ok(());
+        };
         let mut c = self.connection.clone();
         let memberships = self.key(&format!("session-groups:{id}"));
         let groups: Vec<String> = redis::cmd("SMEMBERS")
@@ -199,55 +325,47 @@ impl RedisOnlineDirectory {
             .query_async(&mut c)
             .await
             .map_err(err)?;
-        let mut p = redis::pipe();
-        p.atomic()
-            .cmd("DEL")
-            .arg(self.key(&format!("session:{id}")))
-            .ignore()
-            .cmd("DEL")
-            .arg(memberships)
-            .ignore();
-        for group in groups {
-            p.cmd("SREM").arg(group).arg(id.to_string()).ignore();
-        }
-        if let Some(x) = lease {
-            p.cmd("SREM")
-                .arg(self.key(&format!(
-                    "user:{}:{}:{}",
-                    x.identity.region_id, x.identity.realm_id, x.identity.user_id
-                )))
-                .arg(id.to_string())
-                .ignore();
-            p.cmd("SREM")
-                .arg(self.key(&format!(
-                    "realm:{}:{}",
-                    x.identity.region_id, x.identity.realm_id
-                )))
-                .arg(id.to_string())
-                .ignore();
-        }
-        p.query_async::<()>(&mut c).await.map_err(err)
-    }
-    pub async fn claim_single(&self, lease: &SessionLease, replace: bool) -> Result<Option<Uuid>> {
-        let key = self.key(&format!(
-            "single:{}:{}:{}",
-            lease.identity.region_id, lease.identity.realm_id, lease.identity.user_id
-        ));
+        let identity = lease.identity;
         let script = redis::Script::new(
-            "local o=redis.call('GET',KEYS[1]);if o and ARGV[2]=='0' then return o end;redis.call('SET',KEYS[1],ARGV[1],'PX',ARGV[3]);return o or ''",
+            r#"
+redis.call('DEL', KEYS[1])
+redis.call('DEL', KEYS[2])
+redis.call('SREM', KEYS[3], ARGV[1])
+redis.call('SREM', KEYS[4], ARGV[1])
+redis.call('SREM', KEYS[5], ARGV[1])
+if redis.call('GET', KEYS[6]) == ARGV[1] then redis.call('DEL', KEYS[6]) end
+for index = 2, #ARGV do redis.call('SREM', ARGV[index], ARGV[1]) end
+return 1
+"#,
         );
-        let mut c = self.connection.clone();
-        let old: String = script
-            .key(key)
-            .arg(lease.session_id.to_string())
-            .arg(if replace { "1" } else { "0" })
-            .arg(self.ttl.as_millis())
-            .invoke_async(&mut c)
+        let mut invocation = script.key(self.key(&format!("session:{id}")));
+        invocation
+            .key(memberships)
+            .key(self.key(&format!(
+                "user:{}:{}:{}",
+                identity.region_id, identity.realm_id, identity.user_id
+            )))
+            .key(self.key(&format!(
+                "realm:{}:{}",
+                identity.region_id, identity.realm_id
+            )))
+            .key(self.key(&format!(
+                "capacity:{}:{}",
+                identity.region_id, identity.realm_id
+            )))
+            .key(self.key(&format!(
+                "single:{}:{}:{}",
+                identity.region_id, identity.realm_id, identity.user_id
+            )))
+            .arg(id.to_string());
+        for group in groups {
+            invocation.arg(group);
+        }
+        invocation
+            .invoke_async::<i64>(&mut c)
             .await
-            .map_err(err)?;
-        Ok(Uuid::parse_str(&old)
-            .ok()
-            .filter(|v| *v != lease.session_id))
+            .map(|_| ())
+            .map_err(err)
     }
     async fn sessions_in(&self, key: String) -> Result<Vec<SessionLease>> {
         let mut c = self.connection.clone();

@@ -93,6 +93,88 @@ pub struct GatewayRealmAdmissionConfig {
     pub settings: AdmissionSettings,
 }
 
+/// Hard authenticated-Session limit for one region and realm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RealmCapacityLimit {
+    pub region_id: u32,
+    pub realm_id: u32,
+    pub max_sessions: u64,
+}
+
+/// Online Session and final realm-capacity admission configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GatewayOnlineConfig {
+    pub gateway_id: String,
+    pub lease_ttl: Duration,
+    pub renew_interval: Duration,
+    pub duplicate_login: DuplicateLoginMode,
+    #[serde(default)]
+    pub realm_capacities: Vec<RealmCapacityLimit>,
+    pub full_retry_after: Duration,
+}
+
+impl GatewayOnlineConfig {
+    pub fn new(
+        gateway_id: impl Into<String>,
+        lease_ttl: Duration,
+        renew_interval: Duration,
+        duplicate_login: DuplicateLoginMode,
+    ) -> Self {
+        Self {
+            gateway_id: gateway_id.into(),
+            lease_ttl,
+            renew_interval,
+            duplicate_login,
+            realm_capacities: Vec::new(),
+            full_retry_after: Duration::from_secs(1),
+        }
+    }
+
+    pub fn with_realm_capacity(mut self, region_id: u32, realm_id: u32, max_sessions: u64) -> Self {
+        self.realm_capacities.push(RealmCapacityLimit {
+            region_id,
+            realm_id,
+            max_sessions,
+        });
+        self
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.gateway_id.trim().is_empty()
+            || self.lease_ttl.is_zero()
+            || self.renew_interval.is_zero()
+            || self.renew_interval >= self.lease_ttl
+            || self.full_retry_after.is_zero()
+        {
+            return Err(Error::InvalidConfig(
+                "online config requires a Gateway ID, positive retry delay, and 0 < renew interval < TTL"
+                    .into(),
+            ));
+        }
+        let mut realms = std::collections::HashSet::new();
+        if self.realm_capacities.iter().any(|limit| {
+            limit.region_id == 0
+                || limit.realm_id == 0
+                || limit.max_sessions == 0
+                || !realms.insert((limit.region_id, limit.realm_id))
+        }) {
+            return Err(Error::InvalidConfig(
+                "realm capacities must be positive and unique".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn max_sessions(&self, region_id: u32, realm_id: u32) -> Option<u64> {
+        self.realm_capacities
+            .iter()
+            .find(|limit| limit.region_id == region_id && limit.realm_id == realm_id)
+            .map(|limit| limit.max_sessions)
+    }
+}
+
 impl GatewayRealmAdmissionConfig {
     /// Creates realm admission configuration with default admission settings.
     pub fn new(realms: impl IntoIterator<Item = (u32, u32)>) -> Self {
@@ -114,11 +196,8 @@ pub(crate) struct GatewayBuilder {
 
 /// Online-session services installed into a Gateway.
 struct GatewayOnlineServices {
-    gateway_id: String,
     directory: Arc<dyn OnlineDirectory>,
-    lease_ttl: Duration,
-    renew_interval: Duration,
-    duplicate_login: DuplicateLoginMode,
+    config: GatewayOnlineConfig,
 }
 
 /// Admission evaluation and its optional administrative mutation surface.
@@ -166,19 +245,10 @@ impl GatewayInfrastructure {
 
     pub fn with_online_directory(
         mut self,
-        gateway_id: impl Into<String>,
         directory: Arc<dyn OnlineDirectory>,
-        lease_ttl: Duration,
-        renew_interval: Duration,
-        duplicate_login: DuplicateLoginMode,
+        config: GatewayOnlineConfig,
     ) -> Self {
-        self.online = Some(GatewayOnlineServices {
-            gateway_id: gateway_id.into(),
-            directory,
-            lease_ttl,
-            renew_interval,
-            duplicate_login,
-        });
+        self.online = Some(GatewayOnlineServices { directory, config });
         self
     }
 
@@ -279,16 +349,8 @@ impl GatewayInfrastructure {
                         .into(),
                 ));
             }
-            if online.gateway_id.trim().is_empty()
-                || online.lease_ttl.is_zero()
-                || online.renew_interval.is_zero()
-                || online.renew_interval >= online.lease_ttl
-            {
-                return Err(Error::InvalidConfig(
-                    "online directory requires a gateway ID and 0 < renew interval < TTL".into(),
-                ));
-            }
-            if online.duplicate_login == DuplicateLoginMode::KickExisting
+            online.config.validate()?;
+            if online.config.duplicate_login == DuplicateLoginMode::KickExisting
                 && self.session_control.is_none()
             {
                 return Err(Error::InvalidConfig(
@@ -327,19 +389,10 @@ impl GatewayBuilder {
 
     pub fn with_online_directory(
         mut self,
-        gateway_id: impl Into<String>,
         directory: Arc<dyn OnlineDirectory>,
-        lease_ttl: Duration,
-        renew_interval: Duration,
-        duplicate_login: DuplicateLoginMode,
+        config: GatewayOnlineConfig,
     ) -> Self {
-        self.infrastructure = self.infrastructure.with_online_directory(
-            gateway_id,
-            directory,
-            lease_ttl,
-            renew_interval,
-            duplicate_login,
-        );
+        self.infrastructure = self.infrastructure.with_online_directory(directory, config);
         self
     }
 
@@ -496,13 +549,7 @@ impl GatewayBuilder {
             )?;
         }
         if let Some(online) = infrastructure.online {
-            gateway = gateway.with_online_directory(
-                online.gateway_id,
-                online.directory,
-                online.lease_ttl,
-                online.renew_interval,
-                online.duplicate_login,
-            )?;
+            gateway = gateway.with_online_directory(online.directory, online.config)?;
         }
         if let Some(push) = infrastructure.push {
             gateway = gateway.with_push_transport(push);
@@ -686,11 +733,13 @@ mod tests {
         let result = builder()
             .with_world_client(Arc::new(ReadyWorld))
             .with_online_directory(
-                "gateway-a",
                 Arc::new(MemoryOnlineDirectory::default()),
-                Duration::from_secs(30),
-                Duration::from_secs(10),
-                DuplicateLoginMode::AllowMultiple,
+                GatewayOnlineConfig::new(
+                    "gateway-a",
+                    Duration::from_secs(30),
+                    Duration::from_secs(10),
+                    DuplicateLoginMode::AllowMultiple,
+                ),
             )
             .build();
         assert!(matches!(
@@ -705,11 +754,13 @@ mod tests {
             .with_world_client(Arc::new(ReadyWorld))
             .with_replay_store(Arc::new(MemoryReplayStore::default()))
             .with_online_directory(
-                "gateway-a",
                 Arc::new(MemoryOnlineDirectory::default()),
-                Duration::from_secs(30),
-                Duration::from_secs(10),
-                DuplicateLoginMode::KickExisting,
+                GatewayOnlineConfig::new(
+                    "gateway-a",
+                    Duration::from_secs(30),
+                    Duration::from_secs(10),
+                    DuplicateLoginMode::KickExisting,
+                ),
             )
             .build();
         assert!(matches!(
