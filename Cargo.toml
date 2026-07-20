@@ -20,6 +20,7 @@ members = [
     "tools/elura-load",
     "tools/elura-perf",
 ]
+exclude = ["examples/tiny-network-game"]
 
 [workspace.package]
 version = "0.2.4"

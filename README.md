@@ -16,15 +16,13 @@ Elura separates client connections from game logic. Gateway processes own connec
 sessions; World processes execute commands and manage player state. They can scale independently
 or run together as a monolith.
 
-> [!IMPORTANT]
-> Elura is under active `0.x` development. Minor releases may contain breaking API changes.
-
 ## Highlights
 
 - TCP, UDP, WebSocket, WebTransport and QUIC transports, sessions, routing, middleware, and graceful shutdown.
 - Atomic per-realm Session capacity for application-owned login queues.
 - Distributed Gateway and World deployment or single-process monolith mode.
 - Optional actor-style scene mailboxes with typed commands, lifecycle hooks, and ticks.
+- Fixed-step simulation, AOI, entity replication, client prediction/interpolation, and lag compensation primitives.
 - Application-owned infrastructure with optional Redis, SQL, and Kubernetes adapters.
 - Optional identity, notification, OTP, and payment providers.
 
@@ -34,6 +32,49 @@ Clients ── TCP / UDP / WebSocket / WebTransport / QUIC ──▶ Gateway ─
                                     │                                │
                                     └── Redis · SQL · Kubernetes ────┘
 ```
+
+## Realtime gameplay pipeline
+
+Elura now covers the transport-neutral path from a client input to an authoritative correction:
+
+```text
+Client input
+  └─ Tick sync + redundant input ─▶ Gateway route ─▶ World / Scene mailbox
+                                                   └─ Fixed simulation Tick
+                                                      ├─ Room lifecycle
+                                                      ├─ Application game rules
+                                                      ├─ AOI visibility
+                                                      └─ Replication batches
+                                                           ├─ Spawn / Despawn
+                                                           ├─ Delta / Keyframe
+                                                           └─ cumulative ACK
+
+Client presentation
+  ├─ local prediction + authoritative replay
+  ├─ predicted-spawn matching
+  └─ remote interpolation + adaptive jitter delay
+
+Server validation
+  └─ bounded historical rewind for lag-compensated queries
+```
+
+The primitives are bounded, transport-independent, and can be embedded in a World scene, a
+standalone simulation, or client-side Rust code. Rooms, AOI, simulation clocks, and netcode do not
+require `World`; `SceneRuntime` is the optional World-owned execution host when a scene needs one
+serial mailbox and lifecycle-managed ticks.
+
+| Elura provides | The application still owns |
+| --- | --- |
+| Connections, sessions, routing, admission, and reconnect | Login UI, refresh sessions, and game-specific admission policy |
+| Scene serialization, fixed-step timing, Tick estimation, input ACK/redundancy | Movement, physics, abilities, AI, and deterministic simulation rules |
+| AOI queries and per-observer replication protocol state | Entity schemas, serialization routes, and mapping AOI changes to client messages |
+| Prediction history, replay orchestration, interpolation sampling | Position/rotation interpolation, animation, rendering, and client engine integration |
+| Historical rewind validation | Collision snapshots, ray casts, hit rules, and damage application |
+| Redis, SQL, Kubernetes, identity, OTP, notification, and payment integrations | Product data models, quests, inventory, matchmaking, ranking, and economy rules |
+
+This foundation fits authoritative arenas, room games, co-op instances, MMO map shards, and
+FPS/TPS or MOBA simulation backends. It is not a prebuilt game: game state and behavior remain in
+the upper application.
 
 ## Quick start
 
@@ -63,8 +104,8 @@ The `elura` facade enables `gateway` and `world` by default. Everything else is 
 | `elura-room` | Application-owned room roster and lifecycle state machine |
 | `elura-aoi` | Sparse-grid two-dimensional visibility indexing |
 | `elura-simulation` | Deterministic fixed-step simulation timing |
-| `elura-netcode` | Tick synchronization, redundant input, ACK, and reorder windows |
-| `elura-replication` | Per-observer Spawn, Despawn, delta, keyframe, and ACK streams |
+| `elura-netcode` | Tick synchronization, redundant input, prediction/replay, interpolation, and predicted-entity matching |
+| `elura-replication` | Per-observer Spawn, Despawn, delta, keyframe, prediction-key, reorder, and ACK streams |
 | `elura-lag-compensation` | Bounded authoritative history and server rewind queries |
 | `elura-net-sim` | Deterministic latency, jitter, loss, reorder, and bandwidth simulation |
 | `elura-monolith` | Single-process Gateway and World composition |
@@ -91,6 +132,11 @@ make verify
 ```
 
 This checks formatting, Clippy, tests, Rustdoc, and package contents.
+
+## Example game
+
+[`examples/tiny-network-game`](examples/tiny-network-game) combines an Elura authoritative
+server with two native Spottedcat clients in a tiny multiplayer movement demo.
 
 ## License
 

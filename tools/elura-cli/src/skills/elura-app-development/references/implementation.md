@@ -136,8 +136,8 @@ elura = { version = "0.2.4", features = ["world", "room", "aoi", "simulation", "
   succession, and `Open -> Active -> Closed` lifecycle. It does not allocate rooms to Worlds or
   broadcast room events.
 - `elura::aoi::AoiGrid` indexes arbitrary entity IDs in two dimensions and returns circular query
-  results or `entered`/`left` movement deltas. The application decides how those deltas become Push
-  events.
+  results or `entered`/`left` movement deltas. The application either maps those deltas to Push
+  events directly or resolves the complete visible ID set into replication state.
 - `elura::simulation::FixedStepClock` converts elapsed wall time into bounded deterministic steps.
   It owns no task or timer and can be advanced from `Scene::tick` or a test.
 - `elura::netcode::TickSynchronizer` estimates the authoritative server Tick from correlated probes
@@ -153,8 +153,25 @@ elura = { version = "0.2.4", features = ["world", "room", "aoi", "simulation", "
 
 Keep these values inside the scene that owns their mutable state. Use scene ownership and recovery
 policy before running the same logical room or simulation on more than one World. The application
-  still owns serialization, transport routes, player-to-receiver association, snapshot policy, and
-  the meaning of each input value.
+still owns serialization, transport routes, player-to-receiver association, snapshot policy, and
+the meaning of each input value.
+
+For an authoritative realtime scene, compose them in this order:
+
+1. Receive an input packet, validate it with the client's `InputReceiver`, and return its cumulative
+   ACK even when every frame was a redundant duplicate.
+2. Queue newly accepted inputs by target Tick; consume them from the scene's deterministic fixed
+   step instead of immediately in the network route.
+3. Advance application game state, update entity positions in `AoiGrid`, and record a compact
+   collision/query snapshot in `LagCompensationHistory`.
+4. Resolve each observer's visible IDs to `VersionedState` values and update that observer's
+   `ReplicationSender`.
+5. Serialize and send the resulting packet through an application route or datagram. Apply returned
+   cumulative ACKs to release sender history.
+6. On the client, reconcile the local predicted entity, match predicted spawns by `PredictionKey`,
+   and sample remote entities from `InterpolationBuffer` for presentation.
+7. For a client-reported hit Tick, query immutable lag-compensation history and run application ray
+   casts or collision tests; apply validated damage only to the live current scene.
 
 ## Prediction, interpolation, and lag compensation
 
@@ -173,6 +190,31 @@ policy before running the same logical room or simulation on more than one World
 Use `elura::net_sim::SimulatedLink` in tests to inject deterministic latency, jitter, loss,
 duplication, reordering delay, bandwidth serialization, and queue pressure. Supply explicit
 monotonic time and fixed seeds so failures remain reproducible.
+
+## Realtime hot-path and memory behavior
+
+The realtime primitives use bounded storage and perform no hidden I/O, task spawning, or clock
+reads. Keep configured capacities proportional to the maximum rollback, interpolation, reorder, and
+replication windows rather than treating them as unbounded histories.
+
+- Prediction reconciliation validates ordering and replay limits before mutation, removes the
+  confirmed prefix in place, and rewrites only retained predicted states. Inputs do not need to be
+  cloned, but the application state must be cheap enough to clone once per replayed Tick.
+- Interpolation and lag-compensation histories use preallocated `VecDeque` storage. Normal newest
+  insertion and oldest eviction avoid per-Tick tree-node allocation; late interpolation insertion
+  can shift buffered entries and should remain exceptional.
+- Replication reception stages only entities changed by newly contiguous batches. A rejected packet
+  leaves sequence, pending-batch, and entity state unchanged without cloning the complete entity
+  table. Spawn and keyframe events still clone their supplied full states by design.
+- Replication sending compares the observer's complete desired visible set with its prior projected
+  set. Partition large maps through AOI and scene ownership; do not construct one global observer
+  stream containing every entity in the game.
+- Network simulation clones a payload only when a configured duplicate packet is actually produced.
+
+Use compact prediction and collision states instead of cloning an entire player aggregate containing
+inventory, quests, or other data unrelated to movement. Benchmark application state sizes,
+serialization, and game callbacks separately: those costs are deliberately outside the framework
+primitives.
 
 ## Push events
 

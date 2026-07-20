@@ -1,0 +1,20 @@
+[package]
+name = "elura-spot-demo"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+resolver = "3"
+
+[dependencies]
+bytes = "1.12.1"
+elura = { path = "../../crates/elura", features = ["monolith"] }
+futures-util = { version = "0.3.32", features = ["sink"] }
+prost = "0.14.4"
+serde_json = "1.0.150"
+spottedcat = "1.0.2"
+tokio = { version = "1.52.3", features = ["full"] }
+tokio-util = { version = "0.7.18", features = ["codec"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }

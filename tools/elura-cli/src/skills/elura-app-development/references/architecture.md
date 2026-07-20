@@ -22,6 +22,34 @@ failed scene, or define game rules. The application must establish a unique scen
 spawning it and decide how scene state is recovered after process failure. Capture a cloned runtime
 in World route handlers and shut it down from application or module lifecycle code.
 
+## Realtime gameplay composition
+
+Treat realtime gameplay as a composition of optional primitives, not as a second mandatory
+runtime. `Room`, `AoiGrid`, `FixedStepClock`, netcode buffers, replication streams, lag-compensation
+history, and `SimulatedLink` own no Tokio task, socket, persistence, or World dependency. They can
+run inside a `Scene`, inside another application executor, or in client-side Rust code.
+
+| Stage | Framework primitive | Application responsibility |
+| --- | --- | --- |
+| Connection | Gateway TCP, UDP, WebSocket, WebTransport, or QUIC transport | Select protocol and encode gameplay messages |
+| Input delivery | `TickSynchronizer`, `InputSender`, `InputReceiver` | Define input values and apply each accepted input once |
+| Simulation | `FixedStepClock`, optional `SceneRuntime` | Implement deterministic movement, physics, abilities, and AI |
+| Visibility | `AoiGrid` | Resolve visible IDs to authoritative entity state |
+| Replication | `ReplicationSender`, `ReplicationReceiver` | Serialize batches and associate one observer stream with one client |
+| Client correction | `PredictionBuffer`, `InterpolationBuffer`, `PredictedEntityMatcher` | Simulate inputs, interpolate concrete state, and update presentation |
+| Hit validation | `LagCompensationHistory` | Record compact collision snapshots and perform ray casts or overlap tests |
+| Network testing | `SimulatedLink` | Choose reproducible weak-network profiles and assertions |
+
+An authoritative action-game path normally accepts redundant inputs at Gateway, routes them to the
+owning World and Scene, consumes them on fixed simulation ticks, selects entities through AOI, and
+emits per-observer replication batches. The client predicts its local entity, reconciles against
+authoritative state, and interpolates remote entities. A server may answer a fire command against a
+bounded historical collision snapshot without mutating the live scene.
+
+Do not create one `SceneRuntime` per primitive. Keep related room, simulation, AOI, replication, and
+history state in the single scene that owns the match or map partition. If no shared mutable scene
+exists, use the primitives without `SceneRuntime` or `World`.
+
 ## Login and reconnect ownership
 
 The application login service authenticates credentials, owns durable login or refresh sessions,
@@ -79,8 +107,8 @@ The `elura` facade defaults to `gateway` and `world`. Enable only the capabiliti
 | `room` | Room roster, readiness, leadership, and lifecycle primitives |
 | `aoi` | Sparse-grid two-dimensional AOI queries and visibility deltas |
 | `simulation` | Deterministic fixed-step timing and bounded catch-up |
-| `netcode` | Client/server Tick estimation, redundant inputs, ACK, and reordering |
-| `replication` | Per-observer entity visibility, delta/keyframe state, and ACK streams |
+| `netcode` | Tick estimation, redundant inputs, prediction/replay, interpolation, and predicted entities |
+| `replication` | Per-observer lifecycle, delta/keyframe state, prediction keys, reordering, and ACK streams |
 | `lag-compensation` | Bounded server history and immutable rewind query contexts |
 | `net-sim` | Deterministic adverse network simulation for tests and development |
 | `adapters` | Adapter facade without selecting Redis/SQL/Kubernetes implementations |
