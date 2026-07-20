@@ -1,0 +1,19 @@
+[package]
+name = "elura-realtime-gameplay-example"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+resolver = "3"
+
+[dependencies]
+elura = { path = "../../crates/elura", default-features = false, features = [
+    "room",
+    "aoi",
+    "simulation",
+    "netcode",
+    "replication",
+    "lag-compensation",
+    "net-sim",
+] }

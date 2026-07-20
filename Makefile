@@ -1,4 +1,4 @@
-.PHONY: fmt fmt-fix check test docs package verify
+.PHONY: fmt fmt-fix check test docs package examples verify
 
 fmt:
 	cargo fmt --all -- --check
@@ -33,4 +33,9 @@ package:
 	cargo package -p elura --allow-dirty --list
 	cargo package -p elura-cli --allow-dirty --list
 
-verify: fmt check test docs package
+examples:
+	cargo fmt --manifest-path examples/realtime-gameplay/Cargo.toml -- --check
+	cargo clippy --manifest-path examples/realtime-gameplay/Cargo.toml --all-targets -- -D warnings
+	cargo test --manifest-path examples/realtime-gameplay/Cargo.toml
+
+verify: fmt check test docs package examples

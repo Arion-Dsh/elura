@@ -496,7 +496,7 @@ mod tests {
         let mut listener = bind(config).await.unwrap();
         let client_endpoint = client();
         let connection = client_endpoint
-            .connect(format!("https://localhost:{}{path}", address.port()))
+            .connect(format!("https://{address}{path}"))
             .await
             .unwrap();
         let streams = connection.open_bi().await.unwrap().await.unwrap();
@@ -525,7 +525,7 @@ mod tests {
         let mut listener = bind(config).await.unwrap();
         let client_endpoint = client();
         let connection = client_endpoint
-            .connect(format!("https://localhost:{}{path}", address.port()))
+            .connect(format!("https://{address}{path}"))
             .await
             .unwrap();
         let request = Frame::request(100, 9, Bytes::from_static(b"datagram")).unwrap();

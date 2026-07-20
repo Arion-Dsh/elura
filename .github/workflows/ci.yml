@@ -69,6 +69,9 @@ jobs:
       - run: cargo check -p elura-providers --no-default-features --features identity
       - run: cargo check -p elura-providers --no-default-features --features payment-alipay
       - run: cargo test --workspace --all-features
+      - run: cargo fmt --manifest-path examples/realtime-gameplay/Cargo.toml -- --check
+      - run: cargo clippy --manifest-path examples/realtime-gameplay/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --manifest-path examples/realtime-gameplay/Cargo.toml
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --lib
       - run: cargo package -p elura-core --allow-dirty --no-verify
       # Before the first release, dependent packages cannot resolve the still

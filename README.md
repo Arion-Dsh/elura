@@ -138,6 +138,11 @@ This checks formatting, Clippy, tests, Rustdoc, and package contents.
 [`examples/tiny-network-game`](examples/tiny-network-game) combines an Elura authoritative
 server with two native Spottedcat clients in a tiny multiplayer movement demo.
 
+[`examples/realtime-gameplay`](examples/realtime-gameplay) is a compile-tested, transport-neutral
+walkthrough of rooms, Tick synchronization, redundant input, fixed-step simulation, AOI,
+replication, prediction, interpolation, predicted entities, lag compensation, and network
+simulation.
+
 ## License
 
 Elura is dual-licensed under your choice of:
