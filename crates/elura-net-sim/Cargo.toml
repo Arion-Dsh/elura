@@ -1,0 +1,13 @@
+[package]
+name = "elura-net-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+description = "Deterministic latency, jitter, loss, duplication, reordering, and bandwidth simulation for Elura"
+documentation = "https://docs.rs/elura-net-sim"
+
+[dependencies]
+serde.workspace = true

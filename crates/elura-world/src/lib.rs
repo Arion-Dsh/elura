@@ -12,6 +12,7 @@ mod observability;
 pub mod player;
 mod routes;
 mod runtime;
+pub mod scene;
 mod server;
 mod stats;
 mod testing;

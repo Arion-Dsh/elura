@@ -24,7 +24,9 @@ mod proxy;
 pub mod quic;
 mod session;
 pub(crate) mod tcp;
+pub mod udp;
 pub mod websocket;
+pub mod webtransport;
 
 pub(crate) use account_version::AccountVersionPolicy;
 pub use account_version::AccountVersionSettings;
@@ -42,7 +44,19 @@ pub(crate) use proxy::proxy_client_address;
 pub use proxy::{ProxyProtocolConfig, TrustedProxies};
 pub use quic::QuicConfig;
 pub(crate) use session::{SessionConnection, SessionIoConfig, SessionService, serve_stream};
+pub use udp::UdpConfig;
 pub use websocket::WebSocketConfig;
+pub use webtransport::{WebTransportConfig, WebTransportMode};
+
+/// Operating-system socket namespace occupied by a Gateway transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TransportSocketKind {
+    /// TCP socket namespace.
+    Stream,
+    /// UDP socket namespace.
+    Datagram,
+}
 
 /// A bound transport endpoint driven by the Gateway accept loop.
 #[async_trait]
@@ -54,7 +68,7 @@ pub trait GatewayTransportListener: Send + 'static {
 
 /// A client transport endpoint supervised by [`crate::GatewayServer`].
 ///
-/// Built-in TCP, WebSocket and QUIC endpoints all use this contract, so adding
+/// Built-in TCP, UDP, WebSocket, WebTransport and QUIC endpoints all use this contract, so adding
 /// another transport does not add another method to the application-facing
 /// [`crate::Gateway`] API.
 #[async_trait]
@@ -64,6 +78,11 @@ pub trait GatewayTransport: Send + Sync + 'static {
     fn name(&self) -> &'static str;
 
     fn listen(&self) -> SocketAddr;
+
+    /// Socket namespace used when checking endpoint conflicts.
+    fn socket_kind(&self) -> TransportSocketKind {
+        TransportSocketKind::Stream
+    }
 
     fn validate(&self) -> Result<()> {
         Ok(())
@@ -76,6 +95,7 @@ pub trait GatewayTransport: Send + Sync + 'static {
 pub(crate) trait RegisteredGatewayTransport: Send + Sync + 'static {
     fn name(&self) -> &'static str;
     fn listen(&self) -> SocketAddr;
+    fn socket_kind(&self) -> TransportSocketKind;
     async fn serve(
         &self,
         gateway: Arc<GatewayServer>,
@@ -103,6 +123,10 @@ where
 
     fn listen(&self) -> SocketAddr {
         self.0.listen()
+    }
+
+    fn socket_kind(&self) -> TransportSocketKind {
+        self.0.socket_kind()
     }
 
     async fn serve(
@@ -306,12 +330,66 @@ impl GatewayTransport for QuicConfig {
         self.listen
     }
 
+    fn socket_kind(&self) -> TransportSocketKind {
+        TransportSocketKind::Datagram
+    }
+
     fn validate(&self) -> Result<()> {
         QuicConfig::validate(self)
     }
 
     async fn bind(&self) -> Result<Self::Listener> {
         quic::bind(self.clone()).await
+    }
+}
+
+#[async_trait]
+impl GatewayTransport for UdpConfig {
+    type Listener = udp::UdpGatewayListener;
+
+    fn name(&self) -> &'static str {
+        "udp"
+    }
+
+    fn listen(&self) -> SocketAddr {
+        self.listen
+    }
+
+    fn socket_kind(&self) -> TransportSocketKind {
+        TransportSocketKind::Datagram
+    }
+
+    fn validate(&self) -> Result<()> {
+        UdpConfig::validate(self)
+    }
+
+    async fn bind(&self) -> Result<Self::Listener> {
+        udp::bind(self.clone()).await
+    }
+}
+
+#[async_trait]
+impl GatewayTransport for WebTransportConfig {
+    type Listener = webtransport::WebTransportGatewayListener;
+
+    fn name(&self) -> &'static str {
+        "webtransport"
+    }
+
+    fn listen(&self) -> SocketAddr {
+        self.listen
+    }
+
+    fn socket_kind(&self) -> TransportSocketKind {
+        TransportSocketKind::Datagram
+    }
+
+    fn validate(&self) -> Result<()> {
+        WebTransportConfig::validate(self)
+    }
+
+    async fn bind(&self) -> Result<Self::Listener> {
+        webtransport::bind(self.clone()).await
     }
 }
 

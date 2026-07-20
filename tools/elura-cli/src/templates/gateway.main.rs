@@ -13,7 +13,11 @@ struct AppConfig {
     admin: AdminServerConfig,
     tcp: TcpConfig,
     #[serde(default)]
+    udp: Option<UdpConfig>,
+    #[serde(default)]
     quic: Option<QuicConfig>,
+    #[serde(default)]
+    webtransport: Option<WebTransportConfig>,
     discovery: DnsWorldDiscoveryConfig,
 }
 
@@ -43,8 +47,14 @@ async fn main() -> elura::Result<()> {
     let discovery = Arc::new(DnsWorldDiscovery::new(app.discovery)?);
     let tcp = TcpTransport::new(app.tcp)?;
     let mut gateway = Gateway::new(app.runtime).transport(tcp);
+    if let Some(udp) = app.udp {
+        gateway = gateway.transport(udp);
+    }
     if let Some(quic) = app.quic {
         gateway = gateway.transport(quic);
+    }
+    if let Some(webtransport) = app.webtransport {
+        gateway = gateway.transport(webtransport);
     }
     gateway.world_discovery(discovery).run(app.admin).await
 }

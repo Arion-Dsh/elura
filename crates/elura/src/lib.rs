@@ -88,7 +88,8 @@ pub mod prelude {
         AdmissionRequest, AdmissionSettings, AdmissionStage, GatewayTransport,
         GatewayTransportListener, ProxyProtocolConfig, QuicConfig, RealmAdmission, SessionEvent,
         SessionEventKind, SessionObserver, TcpConfig, TcpProxyProtocolConfig, TcpTransport,
-        TrustedProxies, WebSocketConfig,
+        TransportSocketKind, TrustedProxies, UdpConfig, WebSocketConfig, WebTransportConfig,
+        WebTransportMode,
     };
     #[cfg(feature = "world")]
     pub use crate::world::player::{InvalidationBus, InvalidationHandler, PlayerLoader};
@@ -138,6 +139,11 @@ pub mod world {
         pub use elura_world::player::*;
     }
 
+    /// Actor-style lifecycle and serial command execution for stateful game scenes.
+    pub mod scene {
+        pub use elura_world::scene::*;
+    }
+
     /// Data returned by World diagnostics.
     pub mod diagnostics {
         pub use elura_world::RouteInfo;
@@ -169,6 +175,34 @@ pub use elura_gateway::{self as gateway, protection, transport};
 
 #[cfg(feature = "monolith")]
 pub use elura_monolith as monolith;
+
+/// Application-owned room roster and lifecycle primitives.
+#[cfg(feature = "room")]
+pub use elura_room as room;
+
+/// Generic two-dimensional area-of-interest indexing.
+#[cfg(feature = "aoi")]
+pub use elura_aoi as aoi;
+
+/// Deterministic fixed-step simulation timing primitives.
+#[cfg(feature = "simulation")]
+pub use elura_simulation as simulation;
+
+/// Tick synchronization and redundant input delivery primitives.
+#[cfg(feature = "netcode")]
+pub use elura_netcode as netcode;
+
+/// Per-observer entity visibility and state replication primitives.
+#[cfg(feature = "replication")]
+pub use elura_replication as replication;
+
+/// Server-side bounded historical state and lag-compensated query primitives.
+#[cfg(feature = "lag-compensation")]
+pub use elura_lag_compensation as lag_compensation;
+
+/// Deterministic adverse network simulation for tests and local development.
+#[cfg(feature = "net-sim")]
+pub use elura_net_sim as net_sim;
 
 /// Redis, SQL, Kubernetes and other infrastructure implementations.
 #[cfg(feature = "adapters")]

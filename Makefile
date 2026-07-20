@@ -20,6 +20,13 @@ package:
 	cargo package -p elura-runtime --allow-dirty --list
 	cargo package -p elura-gateway --allow-dirty --list
 	cargo package -p elura-world --allow-dirty --list
+	cargo package -p elura-room --allow-dirty --list
+	cargo package -p elura-aoi --allow-dirty --list
+	cargo package -p elura-simulation --allow-dirty --list
+	cargo package -p elura-netcode --allow-dirty --list
+	cargo package -p elura-replication --allow-dirty --list
+	cargo package -p elura-lag-compensation --allow-dirty --list
+	cargo package -p elura-net-sim --allow-dirty --list
 	cargo package -p elura-monolith --allow-dirty --list
 	cargo package -p elura-adapters --allow-dirty --list
 	cargo package -p elura-providers --allow-dirty --list

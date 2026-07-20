@@ -31,6 +31,8 @@ tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+wtransport.workspace = true
 
 [dev-dependencies]
 tokio-tungstenite.workspace = true
+wtransport = { workspace = true, features = ["dangerous-configuration"] }

@@ -34,7 +34,11 @@ struct AppConfig {
     admin: AdminServerConfig,
     tcp: TcpConfig,
     #[serde(default)]
+    udp: Option<UdpConfig>,
+    #[serde(default)]
     quic: Option<QuicConfig>,
+    #[serde(default)]
+    webtransport: Option<WebTransportConfig>,
     profile: PlayerProfileConfig,
 }
 
@@ -80,8 +84,14 @@ async fn main() -> elura::Result<()> {
     let app = AppConfig::load()?;
     let tcp = TcpTransport::new(app.tcp)?;
     let mut monolith = Monolith::new(app.gateway, app.world).transport(tcp);
+    if let Some(udp) = app.udp {
+        monolith = monolith.transport(udp);
+    }
     if let Some(quic) = app.quic {
         monolith = monolith.transport(quic);
+    }
+    if let Some(webtransport) = app.webtransport {
+        monolith = monolith.transport(webtransport);
     }
     register(monolith, app.profile).run(app.admin).await
 }

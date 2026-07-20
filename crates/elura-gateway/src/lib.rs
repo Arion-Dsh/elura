@@ -859,17 +859,30 @@ impl GatewayServer {
     pub(crate) fn validate_listeners(&self) -> Result<()> {
         let mut listeners = Vec::new();
         if let Some(admin) = self.admin.as_ref() {
-            listeners.push(("admin", admin.listen));
+            listeners.push((
+                "admin",
+                admin.listen,
+                crate::transport::TransportSocketKind::Stream,
+            ));
         }
         for transport in &self.transports {
-            listeners.push((transport.name(), transport.listen()));
+            listeners.push((
+                transport.name(),
+                transport.listen(),
+                transport.socket_kind(),
+            ));
         }
         for http in &self.http {
-            listeners.push(("http", http.listen));
+            listeners.push((
+                "http",
+                http.listen,
+                crate::transport::TransportSocketKind::Stream,
+            ));
         }
-        for (index, (left_name, left)) in listeners.iter().enumerate() {
-            for (right_name, right) in listeners.iter().skip(index + 1) {
-                if left.port() == right.port()
+        for (index, (left_name, left, left_kind)) in listeners.iter().enumerate() {
+            for (right_name, right, right_kind) in listeners.iter().skip(index + 1) {
+                if left_kind == right_kind
+                    && left.port() == right.port()
                     && (left.ip().is_unspecified()
                         || right.ip().is_unspecified()
                         || left.ip() == right.ip())

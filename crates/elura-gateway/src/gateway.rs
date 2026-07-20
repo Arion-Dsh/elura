@@ -187,7 +187,9 @@ mod tests {
 
     use super::*;
     use crate::WorldRequest;
-    use crate::transport::{TcpConfig, TcpTransport, WebSocketConfig};
+    use crate::transport::{
+        TcpConfig, TcpTransport, UdpConfig, WebSocketConfig, WebTransportConfig,
+    };
 
     struct ReadyWorld;
 
@@ -207,10 +209,16 @@ mod tests {
     #[test]
     fn registers_tcp_and_optional_protocols_in_one_transport_registry() {
         let tcp = TcpTransport::new(TcpConfig::default()).unwrap();
+        let webtransport = WebTransportConfig::from_pem_files(
+            "127.0.0.1:17005".parse().unwrap(),
+            "certificate.pem",
+            "key.pem",
+        );
         let server = Gateway::new(config())
             .world_client(Arc::new(ReadyWorld))
             .transport(tcp)
             .transport(WebSocketConfig::default())
+            .transport(webtransport)
             .build()
             .unwrap();
         let transports = server
@@ -218,7 +226,7 @@ mod tests {
             .iter()
             .map(|transport| transport.name())
             .collect::<Vec<_>>();
-        assert_eq!(transports, ["tcp", "websocket"]);
+        assert_eq!(transports, ["tcp", "websocket", "webtransport"]);
     }
 
     #[test]
@@ -235,6 +243,29 @@ mod tests {
             .build();
         assert!(
             matches!(result, Err(Error::InvalidConfig(message)) if message.contains("conflict"))
+        );
+    }
+
+    #[test]
+    fn tcp_and_udp_can_share_a_numeric_port() {
+        let tcp = TcpTransport::new(TcpConfig::default()).unwrap();
+        let udp = UdpConfig {
+            listen: TcpConfig::default().listen,
+            ..UdpConfig::default()
+        };
+        let server = Gateway::new(config())
+            .world_client(Arc::new(ReadyWorld))
+            .transport(tcp)
+            .transport(udp)
+            .build()
+            .unwrap();
+        assert_eq!(
+            server
+                .transports
+                .iter()
+                .map(|transport| transport.name())
+                .collect::<Vec<_>>(),
+            ["tcp", "udp"]
         );
     }
 

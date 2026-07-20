@@ -78,6 +78,13 @@ jobs:
       - run: cargo package -p elura-runtime --allow-dirty --list
       - run: cargo package -p elura-gateway --allow-dirty --list
       - run: cargo package -p elura-world --allow-dirty --list
+      - run: cargo package -p elura-room --allow-dirty --list
+      - run: cargo package -p elura-aoi --allow-dirty --list
+      - run: cargo package -p elura-simulation --allow-dirty --list
+      - run: cargo package -p elura-netcode --allow-dirty --list
+      - run: cargo package -p elura-replication --allow-dirty --list
+      - run: cargo package -p elura-lag-compensation --allow-dirty --list
+      - run: cargo package -p elura-net-sim --allow-dirty --list
       - run: cargo package -p elura-monolith --allow-dirty --list
       - run: cargo package -p elura-adapters --allow-dirty --list
       - run: cargo package -p elura-providers --allow-dirty --list
@@ -107,7 +114,7 @@ jobs:
       - name: Check public API compatibility
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
-          package: elura-core, elura-runtime, elura-gateway, elura-world, elura-monolith, elura-adapters, elura-providers, elura
+          package: elura-core, elura-runtime, elura-gateway, elura-world, elura-room, elura-aoi, elura-simulation, elura-netcode, elura-replication, elura-lag-compensation, elura-net-sim, elura-monolith, elura-adapters, elura-providers, elura
           baseline-rev: ${{ vars.ELURA_API_BASELINE_REV }}
           feature-group: all-features
           rust-toolchain: 1.97.0

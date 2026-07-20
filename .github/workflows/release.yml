@@ -38,6 +38,13 @@ jobs:
           retry_publish elura-runtime
           retry_publish elura-gateway
           retry_publish elura-world
+          retry_publish elura-room
+          retry_publish elura-aoi
+          retry_publish elura-simulation
+          retry_publish elura-netcode
+          retry_publish elura-replication
+          retry_publish elura-lag-compensation
+          retry_publish elura-net-sim
           retry_publish elura-monolith
           retry_publish elura-adapters
           retry_publish elura-providers

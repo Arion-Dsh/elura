@@ -346,6 +346,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
+name = "bit-vec"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b71798fca2c1fe1086445a7258a4bc81e6e49dcd24c8d0dd9a1e57395b603f51"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -957,20 +966,27 @@ dependencies = [
 
 [[package]]
 name = "elura"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "elura-adapters",
+ "elura-aoi",
  "elura-core",
  "elura-gateway",
+ "elura-lag-compensation",
  "elura-monolith",
+ "elura-net-sim",
+ "elura-netcode",
  "elura-providers",
+ "elura-replication",
+ "elura-room",
  "elura-runtime",
+ "elura-simulation",
  "elura-world",
 ]
 
 [[package]]
 name = "elura-adapters"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "async-trait",
  "axum",
@@ -994,15 +1010,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "elura-aoi"
+version = "0.2.4"
+
+[[package]]
 name = "elura-cli"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "elura-core",
 ]
 
 [[package]]
 name = "elura-core"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "async-trait",
  "base64",
@@ -1023,7 +1043,7 @@ dependencies = [
 
 [[package]]
 name = "elura-gateway"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "async-trait",
  "axum",
@@ -1044,11 +1064,19 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+ "wtransport",
+]
+
+[[package]]
+name = "elura-lag-compensation"
+version = "0.2.4"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
 name = "elura-load"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "bytes",
  "elura-core",
@@ -1060,7 +1088,7 @@ dependencies = [
 
 [[package]]
 name = "elura-monolith"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1078,8 +1106,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "elura-net-sim"
+version = "0.2.4"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "elura-netcode"
+version = "0.2.4"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "elura-perf"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "elura-adapters",
  "elura-core",
@@ -1091,7 +1133,7 @@ dependencies = [
 
 [[package]]
 name = "elura-providers"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1123,8 +1165,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "elura-replication"
+version = "0.2.4"
+dependencies = [
+ "elura-aoi",
+ "elura-netcode",
+ "serde",
+]
+
+[[package]]
+name = "elura-room"
+version = "0.2.4"
+
+[[package]]
 name = "elura-runtime"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "async-trait",
  "axum",
@@ -1143,8 +1198,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "elura-simulation"
+version = "0.2.4"
+
+[[package]]
 name = "elura-world"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "async-trait",
  "axum",
@@ -1563,6 +1622,12 @@ dependencies = [
  "libc",
  "windows-link",
 ]
+
+[[package]]
+name = "httlib-huffman"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a9fcbcc408c5526c3ab80d534e5c86e7967c1fb7aa0a8c76abd1edc27deb877"
 
 [[package]]
 name = "http"
@@ -2192,6 +2257,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "octets"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "866cb5af6f3aa3c1b44c3c2d79d22165fbb1b102e1b3fb499864bfe34736ec4b"
+
+[[package]]
 name = "oid-registry"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2715,6 +2786,19 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
+]
+
+[[package]]
+name = "rcgen"
+version = "0.14.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57f6d249aad744e274e682777a50283a225a32705394ee6d5fcc01efa25e4055"
+dependencies = [
+ "ring",
+ "rustls-pki-types",
+ "time",
+ "x509-parser",
+ "yasna",
 ]
 
 [[package]]
@@ -4242,6 +4326,42 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
+name = "wtransport"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea4aacf790813ee1956751491800537f4e04af7557b7b370501ccbfbc85963e4"
+dependencies = [
+ "bytes",
+ "pem",
+ "quinn",
+ "rcgen",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pki-types",
+ "sha2 0.11.0",
+ "socket2",
+ "thiserror",
+ "time",
+ "tokio",
+ "tracing",
+ "url",
+ "wtransport-proto",
+ "x509-parser",
+]
+
+[[package]]
+name = "wtransport-proto"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5867c629e4252f7439d82315923daaf27f4fa442410d51b78ab93ef4c432a11"
+dependencies = [
+ "httlib-huffman",
+ "octets",
+ "thiserror",
+ "url",
+]
+
+[[package]]
 name = "x509-parser"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4264,6 +4384,16 @@ name = "xxhash-rust"
 version = "0.8.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985eec839aaf2a1270af8f4ebcf63cf9401cfd90f0902f97c28d9f104ffbde72"
+
+[[package]]
+name = "yasna"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5f6765e852b9b4dc8e2a76843e4d64d1cea8e79bcde0b6901aea8e7c7f08282"
+dependencies = [
+ "bit-vec",
+ "time",
+]
 
 [[package]]
 name = "yoke"

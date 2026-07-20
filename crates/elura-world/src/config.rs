@@ -16,6 +16,9 @@ pub struct WorldConfig {
     pub max_in_flight_per_connection: usize,
     pub tls_handshake_timeout: Duration,
     pub handler_timeout: Duration,
+    /// Time allowed for readiness and registration withdrawal to propagate
+    /// before the World listener stops accepting requests.
+    pub discovery_drain_delay: Duration,
     pub shutdown_timeout: Duration,
     pub tls: Option<ServerTlsFilesConfig>,
     #[serde(skip)]
@@ -31,6 +34,7 @@ impl Default for WorldConfig {
             max_in_flight_per_connection: 64,
             tls_handshake_timeout: Duration::from_secs(5),
             handler_timeout: Duration::from_secs(5),
+            discovery_drain_delay: Duration::from_secs(2),
             shutdown_timeout: Duration::from_secs(10),
             tls: None,
             internal_token: None,
@@ -63,6 +67,10 @@ mod tests {
         let config: WorldConfig = serde_json::from_str(r#"{"listen":"0.0.0.0:19000"}"#).unwrap();
         assert_eq!(config.listen.port(), 19000);
         assert_eq!(config.max_payload, WorldConfig::default().max_payload);
+        assert_eq!(
+            config.discovery_drain_delay,
+            WorldConfig::default().discovery_drain_delay
+        );
         assert!(serde_json::from_str::<WorldConfig>(r#"{"unknown":true}"#).is_err());
         assert!(serde_json::from_str::<WorldConfig>(r#"{"request_replay_capacity":100}"#).is_err());
         assert!(serde_json::from_str::<WorldConfig>(r#"{"admin":null}"#).is_err());

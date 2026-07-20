@@ -28,7 +28,8 @@ data:
   world.json: |
     {
       "runtime": {
-        "listen": "0.0.0.0:18000"
+        "listen": "0.0.0.0:18000",
+        "discovery_drain_delay": { "secs": 6, "nanos": 0 }
       },
       "admin": {
         "listen": "0.0.0.0:18001",

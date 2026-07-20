@@ -1,6 +1,6 @@
 ---
 name: elura-app-development
-description: Build, extend, and test upper-layer Rust game services on the Elura framework. Use when an agent works in an Elura application on World routes or modules, Gateway or Monolith assembly, middleware, player state, push events, application configuration, adapters/providers, deployment scaffolds, or Elura-focused tests and debugging.
+description: Build, extend, and test upper-layer Rust game services on the Elura framework. Use when an agent works in an Elura application on World routes or modules, scenes, rooms, AOI, fixed-step simulations, realtime netcode, client prediction/interpolation, entity replication, lag compensation, network simulation, Gateway or Monolith assembly, middleware, player state, push events, application configuration, adapters/providers, deployment scaffolds, or Elura-focused tests and debugging.
 ---
 
 # Elura App Development
@@ -38,7 +38,9 @@ Adapt generated code instead of recreating framework bootstrapping from memory. 
 3. Keep handlers focused on game behavior. Take authenticated identity and request metadata from `WorldContext`; inject application services through captured `Arc` values, middleware context values, or typed transactions.
 4. Use middleware for cross-cutting behavior. Call `next.run(context, payload).await` exactly once unless short-circuiting intentionally.
 5. Use typed `Event` and `WorldContext` push methods for server-initiated messages. Configure a push transport in distributed deployments.
-6. Assemble `Gateway`, `World`, or `Monolith` with explicit transports and infrastructure. Let `build`/`run` surface deferred configuration and duplicate-registration errors.
+6. Use `elura::world::scene` only when a stateful scene needs a serial mailbox or tick lifecycle. Keep placement, persistence, recovery, and game rules in the application.
+7. Compose the opt-in `elura::room`, `elura::aoi`, `elura::simulation`, `elura::netcode`, `elura::replication`, and `elura::lag_compensation` primitives around application-owned scenes and client simulations. Use `elura::net_sim` only in tests or local development; do not treat these primitives as networked services or persistence layers.
+8. Assemble `Gateway`, `World`, or `Monolith` with explicit transports and infrastructure. Let `build`/`run` surface deferred configuration and duplicate-registration errors.
 
 ## Preserve framework boundaries
 

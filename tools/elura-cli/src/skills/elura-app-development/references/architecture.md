@@ -10,6 +10,18 @@
 
 Gateway owns client transports, tickets, sessions, admission, routing to Worlds, and connection-oriented push delivery. World owns typed commands, modules, middleware, player state, and game behavior. Do not move business rules into Gateway interceptors merely because requests pass through Gateway.
 
+## Stateful scenes
+
+Use `elura::world::scene::SceneRuntime` when multiple players mutate one scene, room, battle, or
+simulation and player-key serialization is not a sufficient consistency boundary. Each live scene
+has one bounded mailbox and one Tokio task; typed commands, lifecycle hooks, and optional ticks run
+serially within that scene, while different scenes remain independently schedulable.
+
+The runtime does not choose a World, acquire distributed ownership, persist snapshots, restore a
+failed scene, or define game rules. The application must establish a unique scene owner before
+spawning it and decide how scene state is recovered after process failure. Capture a cloned runtime
+in World route handlers and shut it down from application or module lifecycle code.
+
 ## Login and reconnect ownership
 
 The application login service authenticates credentials, owns durable login or refresh sessions,
@@ -64,6 +76,13 @@ The `elura` facade defaults to `gateway` and `world`. Enable only the capabiliti
 | Feature | Adds |
 | --- | --- |
 | `monolith` | Combined single-process runtime |
+| `room` | Room roster, readiness, leadership, and lifecycle primitives |
+| `aoi` | Sparse-grid two-dimensional AOI queries and visibility deltas |
+| `simulation` | Deterministic fixed-step timing and bounded catch-up |
+| `netcode` | Client/server Tick estimation, redundant inputs, ACK, and reordering |
+| `replication` | Per-observer entity visibility, delta/keyframe state, and ACK streams |
+| `lag-compensation` | Bounded server history and immutable rewind query contexts |
+| `net-sim` | Deterministic adverse network simulation for tests and development |
 | `adapters` | Adapter facade without selecting Redis/SQL/Kubernetes implementations |
 | `redis` | Redis-backed distributed implementations |
 | `sql` | SQL-backed implementations |
@@ -97,7 +116,9 @@ For distributed mode, configure matching internal tokens and TLS expectations on
 ## Public API navigation
 
 - Common types: `elura::prelude`
-- World APIs: `elura::world`, including `middleware`, `player`, and `testing`
+- World APIs: `elura::world`, including `middleware`, `player`, `scene`, and `testing`
+- Gameplay primitives: `elura::room`, `elura::aoi`, `elura::simulation`, `elura::netcode`, `elura::replication`, and `elura::lag_compensation`
+- Network test utilities: `elura::net_sim`
 - Gateway APIs: `elura::gateway`, `elura::transport`, `elura::protection`
 - Runtime administration/security: `elura::observability`, `elura::security`, `elura::launch`
 - Distributed contracts: `elura::discovery`

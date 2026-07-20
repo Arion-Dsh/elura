@@ -295,14 +295,16 @@ impl WorldServer {
         let http = std::mem::take(&mut self.http);
         if admin.is_none() && http.is_empty() {
             return if in_process {
-                self.serve_in_process_core(external_shutdown).await
+                self.serve_in_process_core(external_shutdown, None).await
             } else {
-                self.serve_core(external_shutdown).await
+                self.serve_core(external_shutdown, None).await
             };
         }
 
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let forward_shutdown = shutdown_tx.clone();
+        let (core_shutdown_tx, core_shutdown_rx) = watch::channel(false);
+        let (http_shutdown_tx, http_shutdown_rx) = watch::channel(false);
+        let (admin_shutdown_tx, admin_shutdown_rx) = watch::channel(false);
+        let forward_shutdown = core_shutdown_tx.clone();
         let forward = tokio::spawn(async move {
             if *external_shutdown.borrow() {
                 let _ = forward_shutdown.send(true);
@@ -318,18 +320,25 @@ impl WorldServer {
         });
 
         let mut tasks = JoinSet::new();
-        let world_shutdown = shutdown_rx.clone();
+        let world_shutdown = core_shutdown_rx;
+        let world_http_shutdown = http_shutdown_tx.clone();
         if in_process {
-            tasks.spawn(async move { self.serve_in_process_core(world_shutdown).await });
+            tasks.spawn(async move {
+                self.serve_in_process_core(world_shutdown, Some(world_http_shutdown))
+                    .await
+            });
         } else {
-            tasks.spawn(async move { self.serve_core(world_shutdown).await });
+            tasks.spawn(async move {
+                self.serve_core(world_shutdown, Some(world_http_shutdown))
+                    .await
+            });
         }
         if let Some(admin) = admin {
-            let admin_shutdown = shutdown_rx.clone();
+            let admin_shutdown = admin_shutdown_rx.clone();
             tasks.spawn(async move { admin.serve(admin_shutdown).await });
         }
         for http in http {
-            let http_shutdown = shutdown_rx.clone();
+            let http_shutdown = http_shutdown_rx.clone();
             tasks.spawn(async move { http.serve(http_shutdown).await });
         }
 
@@ -345,13 +354,19 @@ impl WorldServer {
                 }
                 _ => {}
             }
-            let _ = shutdown_tx.send(true);
+            let _ = core_shutdown_tx.send(true);
+            let _ = http_shutdown_tx.send(true);
+            let _ = admin_shutdown_tx.send(true);
         }
         forward.abort();
         first_error.map_or(Ok(()), Err)
     }
 
-    async fn serve_in_process_core(self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
+    async fn serve_in_process_core(
+        self,
+        mut shutdown: watch::Receiver<bool>,
+        http_shutdown: Option<watch::Sender<bool>>,
+    ) -> Result<()> {
         if self.registrar.is_some() {
             return Err(Error::InvalidConfig(
                 "in-process World cannot publish a network registration".into(),
@@ -365,10 +380,17 @@ impl WorldServer {
             }
         }
         self.ready.store(false, Ordering::Release);
+        if let Some(http_shutdown) = http_shutdown {
+            let _ = http_shutdown.send(true);
+        }
         self.stop_modules(started).await
     }
 
-    async fn serve_core(self, shutdown: watch::Receiver<bool>) -> Result<()> {
+    async fn serve_core(
+        self,
+        mut shutdown: watch::Receiver<bool>,
+        http_shutdown: Option<watch::Sender<bool>>,
+    ) -> Result<()> {
         let listener = TcpListener::bind(self.config.listen).await?;
         let started = self.start_modules().await?;
         if let Some(registrar) = &self.registrar
@@ -378,21 +400,57 @@ impl WorldServer {
             return Err(error);
         }
         self.ready.store(true, Ordering::Release);
-        let result = match &self.registrar {
-            Some(registrar) => tokio::try_join!(
-                self.serve_inner(listener, shutdown.clone()),
-                renew_registration(registrar.clone(), shutdown),
-            )
-            .map(|_| ()),
-            None => self.serve_inner(listener, shutdown).await,
-        };
+
+        let (listener_shutdown_tx, listener_shutdown_rx) = watch::channel(false);
+        let (renewal_shutdown_tx, renewal_shutdown_rx) = watch::channel(false);
+        let mut serving = Box::pin(self.serve_inner(listener, listener_shutdown_rx));
+        let mut renewal = Box::pin(renew_registration_if_configured(
+            self.registrar.clone(),
+            renewal_shutdown_rx,
+        ));
+        let mut serve_result = None;
+        let mut renewal_result = None;
+
+        tokio::select! {
+            result = &mut serving => serve_result = Some(result),
+            result = &mut renewal, if self.registrar.is_some() => renewal_result = Some(result),
+            _ = wait_for_shutdown(&mut shutdown) => {}
+        }
+
+        // Withdraw traffic before closing the listener. Keeping the listener
+        // and administration server alive during the delay lets stale
+        // discovery snapshots finish routing without creating an outage.
         self.ready.store(false, Ordering::Release);
+        let _ = renewal_shutdown_tx.send(true);
+        if renewal_result.is_none() {
+            renewal_result = Some(if self.registrar.is_some() {
+                renewal.await
+            } else {
+                Ok(())
+            });
+        }
         let unregister = match &self.registrar {
             Some(registrar) => registrar.unregister().await,
             None => Ok(()),
         };
+
+        if serve_result.is_none() {
+            if !self.config.discovery_drain_delay.is_zero() {
+                tokio::time::sleep(self.config.discovery_drain_delay).await;
+            }
+            if let Some(http_shutdown) = http_shutdown {
+                let _ = http_shutdown.send(true);
+            }
+            let _ = listener_shutdown_tx.send(true);
+            serve_result = Some(serving.await);
+        }
+
         let stop = self.stop_modules(started).await;
-        result.and(unregister).and(stop)
+        serve_result
+            .expect("World serving result is always collected")
+            .and(renewal_result.expect("World renewal result is always collected"))
+            .and(unregister)
+            .and(stop)
     }
 
     async fn start_modules(&self) -> Result<usize> {
@@ -548,6 +606,27 @@ async fn renew_registration(
     }
 }
 
+async fn renew_registration_if_configured(
+    registrar: Option<Arc<dyn WorldRegistrar>>,
+    shutdown: watch::Receiver<bool>,
+) -> Result<()> {
+    match registrar {
+        Some(registrar) => renew_registration(registrar, shutdown).await,
+        None => std::future::pending().await,
+    }
+}
+
+async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
+    if *shutdown.borrow() {
+        return;
+    }
+    while shutdown.changed().await.is_ok() {
+        if *shutdown.borrow() {
+            return;
+        }
+    }
+}
+
 async fn serve_connection(
     stream: BoxedServiceStream,
     runtime: Arc<WorldRuntime>,
@@ -696,6 +775,7 @@ mod tests {
     use elura_core::protocol::FIRST_APPLICATION_ROUTE;
     use elura_core::session::Identity;
     use prost::Message;
+    use tokio::sync::Notify;
 
     use super::*;
     use crate::player::{PlayerLoader, PlayerSnapshot, PlayerStateMiddleware};
@@ -899,6 +979,7 @@ mod tests {
         let unregistered = Arc::new(AtomicUsize::new(0));
         let mut builder = WorldBuilder::new(WorldConfig {
             listen,
+            discovery_drain_delay: Duration::ZERO,
             ..WorldConfig::default()
         })
         .unwrap();
@@ -929,6 +1010,89 @@ mod tests {
         assert!(renewed.load(Ordering::SeqCst) >= 1);
         assert_eq!(unregistered.load(Ordering::SeqCst), 1);
         assert!(!diagnostics.ready());
+    }
+
+    struct BlockingRegistrar {
+        ready: Arc<AtomicBool>,
+        ready_at_unregister: Arc<AtomicBool>,
+        unregister_started: Arc<Notify>,
+        allow_unregister: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl WorldRegistrar for BlockingRegistrar {
+        fn renew_interval(&self) -> Duration {
+            Duration::from_secs(60)
+        }
+
+        async fn register(&self) -> Result<()> {
+            Ok(())
+        }
+
+        async fn renew(&self) -> Result<()> {
+            Ok(())
+        }
+
+        async fn unregister(&self) -> Result<()> {
+            self.ready_at_unregister
+                .store(self.ready.load(Ordering::Acquire), Ordering::Release);
+            self.unregister_started.notify_one();
+            self.allow_unregister.notified().await;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn withdraws_readiness_before_unregister_and_keeps_listeners_alive() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let listen = listener.local_addr().unwrap();
+        drop(listener);
+        let mut builder = WorldBuilder::new(WorldConfig {
+            listen,
+            discovery_drain_delay: Duration::ZERO,
+            ..WorldConfig::default()
+        })
+        .unwrap();
+        builder
+            .register_raw(100, |_context, payload: Bytes| async move { Ok(payload) })
+            .unwrap();
+
+        let server = builder.build().unwrap();
+        let diagnostics = server.diagnostics();
+        let ready_at_unregister = Arc::new(AtomicBool::new(true));
+        let unregister_started = Arc::new(Notify::new());
+        let allow_unregister = Arc::new(Notify::new());
+        let ready = server.ready.clone();
+        let server = server.with_registrar(Arc::new(BlockingRegistrar {
+            ready,
+            ready_at_unregister: ready_at_unregister.clone(),
+            unregister_started: unregister_started.clone(),
+            allow_unregister: allow_unregister.clone(),
+        }));
+        let admin = admin_config();
+        let admin_listen = admin.listen;
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let task = tokio::spawn(server.serve(admin, shutdown_rx));
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !diagnostics.ready() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        shutdown_tx.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), unregister_started.notified())
+            .await
+            .unwrap();
+
+        assert!(!diagnostics.ready());
+        assert!(!ready_at_unregister.load(Ordering::Acquire));
+        tokio::net::TcpStream::connect(listen).await.unwrap();
+        tokio::net::TcpStream::connect(admin_listen).await.unwrap();
+
+        allow_unregister.notify_one();
+        task.await.unwrap().unwrap();
     }
 
     #[async_trait]

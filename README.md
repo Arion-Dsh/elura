@@ -21,14 +21,15 @@ or run together as a monolith.
 
 ## Highlights
 
-- WebSocket and QUIC transports, sessions, routing, middleware, and graceful shutdown.
+- TCP, UDP, WebSocket, WebTransport and QUIC transports, sessions, routing, middleware, and graceful shutdown.
 - Atomic per-realm Session capacity for application-owned login queues.
 - Distributed Gateway and World deployment or single-process monolith mode.
+- Optional actor-style scene mailboxes with typed commands, lifecycle hooks, and ticks.
 - Application-owned infrastructure with optional Redis, SQL, and Kubernetes adapters.
 - Optional identity, notification, OTP, and payment providers.
 
 ```text
-Clients ── WebSocket / QUIC ──▶ Gateway ── routed commands ──▶ World
+Clients ── TCP / UDP / WebSocket / WebTransport / QUIC ──▶ Gateway ── routed commands ──▶ World
                                 sessions                         game logic
                                     │                                │
                                     └── Redis · SQL · Kubernetes ────┘
@@ -59,6 +60,13 @@ The `elura` facade enables `gateway` and `world` by default. Everything else is 
 | `elura-runtime` | Lifecycle, security, administration, and observability |
 | `elura-gateway` | Client connection and session runtime |
 | `elura-world` | Command and player-state runtime |
+| `elura-room` | Application-owned room roster and lifecycle state machine |
+| `elura-aoi` | Sparse-grid two-dimensional visibility indexing |
+| `elura-simulation` | Deterministic fixed-step simulation timing |
+| `elura-netcode` | Tick synchronization, redundant input, ACK, and reorder windows |
+| `elura-replication` | Per-observer Spawn, Despawn, delta, keyframe, and ACK streams |
+| `elura-lag-compensation` | Bounded authoritative history and server rewind queries |
+| `elura-net-sim` | Deterministic latency, jitter, loss, reorder, and bandwidth simulation |
 | `elura-monolith` | Single-process Gateway and World composition |
 | `elura-adapters` | Redis, SQL, and Kubernetes implementations |
 | `elura-providers` | Identity, notification, OTP, and payment integrations |
@@ -68,7 +76,7 @@ Example feature selection:
 
 ```toml
 [dependencies]
-elura = { version = "0.2.2", features = ["monolith", "redis"] }
+elura = { version = "0.2.4", features = ["monolith", "room", "aoi", "simulation", "netcode", "replication", "lag-compensation", "redis"] }
 ```
 
 Applications may implement the public storage and transport contracts themselves; using

@@ -1,0 +1,13 @@
+[package]
+name = "elura-netcode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+description = "Transport-independent tick synchronization and redundant input primitives for Elura"
+documentation = "https://docs.rs/elura-netcode"
+
+[dependencies]
+serde.workspace = true

@@ -18,6 +18,13 @@ core = ["dep:elura-core"]
 runtime = ["core", "dep:elura-runtime"]
 gateway = ["runtime", "dep:elura-gateway"]
 world = ["runtime", "dep:elura-world"]
+room = ["dep:elura-room"]
+aoi = ["dep:elura-aoi"]
+simulation = ["dep:elura-simulation"]
+netcode = ["dep:elura-netcode"]
+replication = ["dep:elura-replication"]
+lag-compensation = ["dep:elura-lag-compensation"]
+net-sim = ["dep:elura-net-sim"]
 monolith = ["gateway", "world", "dep:elura-monolith"]
 adapters = ["runtime", "dep:elura-adapters"]
 redis = ["adapters", "gateway", "world", "elura-adapters/redis"]
@@ -35,7 +42,7 @@ payment-quicksdk = ["providers", "elura-providers/payment-quicksdk"]
 payment-wechat-mini = ["providers", "elura-providers/payment-wechat-mini"]
 payment-wechat-pay = ["providers", "elura-providers/payment-wechat-pay"]
 full = [
-    "redis", "sql", "kubernetes", "admin", "identity", "notification-alisms", "otp",
+    "room", "aoi", "simulation", "netcode", "replication", "lag-compensation", "net-sim", "redis", "sql", "kubernetes", "admin", "identity", "notification-alisms", "otp",
     "payment-alipay", "payment-apple", "payment-douyin", "payment-quicksdk",
     "payment-wechat-mini", "payment-wechat-pay",
 ]
@@ -45,6 +52,13 @@ elura-core = { workspace = true, optional = true }
 elura-runtime = { workspace = true, optional = true }
 elura-gateway = { workspace = true, optional = true }
 elura-world = { workspace = true, optional = true }
+elura-room = { workspace = true, optional = true }
+elura-aoi = { workspace = true, optional = true }
+elura-simulation = { workspace = true, optional = true }
+elura-netcode = { workspace = true, optional = true }
+elura-replication = { workspace = true, optional = true }
+elura-lag-compensation = { workspace = true, optional = true }
+elura-net-sim = { workspace = true, optional = true }
 elura-monolith = { workspace = true, optional = true }
 elura-adapters = { workspace = true, optional = true, default-features = false }
 elura-providers = { workspace = true, optional = true, default-features = false }

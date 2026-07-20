@@ -1,0 +1,12 @@
+[package]
+name = "elura-aoi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+description = "Generic two-dimensional area-of-interest indexing for Elura"
+documentation = "https://docs.rs/elura-aoi"
+
+[dependencies]
