@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,7 +8,9 @@ use std::time::Duration;
 use elura_adapters::online::RedisOnlineDirectory;
 use elura_adapters::replay::RedisReplayStore;
 use elura_core::online::DuplicateLoginMode;
-use elura_gateway::transport::{TcpConfig, TcpTransport};
+use elura_gateway::transport::{
+    QuicConfig, TcpConfig, TcpTransport, UdpConfig, WebSocketConfig, WebTransportConfig,
+};
 use elura_gateway::{Gateway, GatewayConfig, GatewayOnlineConfig, TcpWorldClient};
 use elura_runtime::lifecycle::shutdown_signal;
 use elura_runtime::observability::AdminServerConfig;
@@ -37,9 +40,34 @@ async fn resolve_address(value: &str) -> AnyResult<SocketAddr> {
         .ok_or_else(|| format!("cannot resolve {value}").into())
 }
 
+fn default_certificate_file(name: &str) -> PathBuf {
+    let container = Path::new("/app/certs").join(name);
+    if container.exists() {
+        return container;
+    }
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/elura-gateway/src/transport/testdata")
+        .join(name)
+}
+
 #[tokio::main]
 async fn main() -> AnyResult<()> {
-    let listen = env_parse("ELURA_GATEWAY_LISTEN", "0.0.0.0:17000")?;
+    let tcp_listen = env_parse(
+        "ELURA_GATEWAY_TCP_LISTEN",
+        &env_value("ELURA_GATEWAY_LISTEN", "0.0.0.0:17000"),
+    )?;
+    let websocket_listen = env_parse("ELURA_GATEWAY_WEBSOCKET_LISTEN", "0.0.0.0:17002")?;
+    let quic_listen = env_parse("ELURA_GATEWAY_QUIC_LISTEN", "0.0.0.0:17003")?;
+    let udp_listen = env_parse("ELURA_GATEWAY_UDP_LISTEN", "0.0.0.0:17004")?;
+    let webtransport_listen = env_parse("ELURA_GATEWAY_WEBTRANSPORT_LISTEN", "0.0.0.0:17005")?;
+    let default_certificate = default_certificate_file("quic-cert.pem");
+    let default_private_key = default_certificate_file("quic-key.pem");
+    let certificate = std::env::var_os("ELURA_GATEWAY_CERTIFICATE")
+        .map(PathBuf::from)
+        .unwrap_or(default_certificate);
+    let private_key = std::env::var_os("ELURA_GATEWAY_PRIVATE_KEY")
+        .map(PathBuf::from)
+        .unwrap_or(default_private_key);
     let world_address = resolve_address(&env_value("ELURA_WORLD_ADDRESS", "world:18000")).await?;
     let max_connections = env_parse("ELURA_MAX_CONNECTIONS", "20000")?;
     let max_connections_per_ip = env_parse("ELURA_MAX_CONNECTIONS_PER_IP", "20000")?;
@@ -82,10 +110,24 @@ async fn main() -> AnyResult<()> {
     config.ticket.audience = "gateway".into();
     config.ticket.login_ttl = Duration::from_secs(300);
     let mut tcp_config = TcpConfig::default();
-    tcp_config.listen = listen;
+    tcp_config.listen = tcp_listen;
     let tcp = TcpTransport::new(tcp_config)?;
+    let mut websocket = WebSocketConfig::default();
+    websocket.listen = websocket_listen;
+    websocket.allow_missing_origin = true;
+    let mut udp = UdpConfig::default();
+    udp.listen = udp_listen;
+    udp.max_sessions = max_connections;
+    let quic = QuicConfig::from_pem_files(quic_listen, &certificate, &private_key);
+    let mut webtransport =
+        WebTransportConfig::from_pem_files(webtransport_listen, certificate, private_key);
+    webtransport.allow_missing_origin = true;
     let gateway = Gateway::new(config)
         .transport(tcp)
+        .transport(websocket)
+        .transport(quic)
+        .transport(udp)
+        .transport(webtransport)
         .replay_store(replay)
         .world_client(world)
         .online_directory(

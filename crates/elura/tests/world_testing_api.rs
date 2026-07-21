@@ -1,8 +1,6 @@
 #![cfg(feature = "world")]
 
-use elura::world::testing::{
-    WorldLoadConfig, WorldLoadLatency, WorldLoadReport, WorldTestClient, test_identity,
-};
+use elura::world::testing::{WorldTestClient, test_identity};
 use elura::world::{Route, World, WorldConfig};
 use prost::Message;
 
@@ -23,39 +21,25 @@ impl Route for EchoRoute {
 }
 
 #[test]
-fn facade_exposes_world_load_testing_types() {
-    let config = WorldLoadConfig::new(8, 100);
-    let latency = WorldLoadLatency::default();
-    let report_type: Option<WorldLoadReport> = None;
-
-    assert_eq!(config.concurrency, 8);
-    assert_eq!(config.iterations_per_worker, 100);
-    assert_eq!(latency.min, std::time::Duration::ZERO);
-    assert!(report_type.is_none());
+fn facade_exposes_world_unit_testing_types() {
     let client_type: Option<WorldTestClient> = None;
     assert!(client_type.is_none());
+    assert_eq!(test_identity(7).user_id, 7);
 }
 
 #[tokio::test]
-async fn upper_layer_can_run_an_in_process_typed_load() {
+async fn upper_layer_can_run_a_typed_business_test() {
     let harness = World::new(WorldConfig::default())
         .route(EchoRoute, |_context, request| async move { Ok(request) })
         .build()
         .unwrap()
         .harness();
-    let report = harness
-        .load_route(
-            EchoRoute,
-            WorldLoadConfig::new(2, 3),
-            |worker| test_identity(worker as i64 + 1),
-            |_worker, iteration| Echo {
-                sequence: iteration as u64,
-            },
-        )
-        .await
-        .unwrap();
+    let client = harness.client(test_identity(1)).unwrap();
 
-    assert_eq!(report.attempted, 6);
-    assert_eq!(report.succeeded, 6);
-    assert!(report.is_success());
+    let first = client.call(EchoRoute, Echo { sequence: 1 }).await.unwrap();
+    let second = client.call(EchoRoute, Echo { sequence: 2 }).await.unwrap();
+
+    assert_eq!(first.sequence, 1);
+    assert_eq!(second.sequence, 2);
+    assert_eq!(harness.stats().commands, 2);
 }

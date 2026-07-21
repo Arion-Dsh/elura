@@ -1080,12 +1080,20 @@ dependencies = [
 name = "elura-load"
 version = "0.2.5"
 dependencies = [
+ "async-trait",
  "bytes",
  "elura-core",
+ "elura-gateway",
  "futures-util",
+ "quinn",
+ "rustls",
+ "rustls-pki-types",
  "serde_json",
  "tokio",
+ "tokio-tungstenite 0.30.0",
  "tokio-util",
+ "webpki-roots",
+ "wtransport",
 ]
 
 [[package]]
@@ -1202,6 +1210,25 @@ dependencies = [
 [[package]]
 name = "elura-simulation"
 version = "0.2.5"
+
+[[package]]
+name = "elura-testkit"
+version = "0.2.5"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "elura-core",
+ "elura-gateway",
+ "elura-runtime",
+ "elura-world",
+ "futures-util",
+ "prost",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "tokio-util",
+ "uuid",
+]
 
 [[package]]
 name = "elura-world"

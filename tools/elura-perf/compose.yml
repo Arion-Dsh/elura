@@ -76,5 +76,6 @@ services:
       ELURA_LOAD_TICKET_KEY: elura-rs-perf-ticket-key-at-least-32-bytes-2026
     depends_on:
       - load-balancer
+      - gateway-1
     profiles:
       - load

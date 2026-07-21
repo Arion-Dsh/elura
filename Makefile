@@ -28,6 +28,7 @@ package:
 	cargo package -p elura-lag-compensation --allow-dirty --list
 	cargo package -p elura-net-sim --allow-dirty --list
 	cargo package -p elura-monolith --allow-dirty --list
+	cargo package -p elura-testkit --allow-dirty --list
 	cargo package -p elura-adapters --allow-dirty --list
 	cargo package -p elura-providers --allow-dirty --list
 	cargo package -p elura --allow-dirty --list

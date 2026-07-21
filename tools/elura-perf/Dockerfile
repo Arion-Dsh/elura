@@ -23,3 +23,5 @@ RUN apt-get update \
 COPY --from=builder /out/elura-perf-gateway /app/elura-perf-gateway
 COPY --from=builder /out/elura-perf-world /app/elura-perf-world
 COPY --from=builder /out/elura-load /app/elura-load
+COPY crates/elura-gateway/src/transport/testdata/quic-cert.pem /app/certs/quic-cert.pem
+COPY crates/elura-gateway/src/transport/testdata/quic-key.pem /app/certs/quic-key.pem

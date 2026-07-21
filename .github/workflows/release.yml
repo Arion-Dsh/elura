@@ -52,6 +52,7 @@ jobs:
           retry_publish elura-lag-compensation
           retry_publish elura-net-sim
           retry_publish elura-monolith
+          retry_publish elura-testkit
           retry_publish elura-adapters
           retry_publish elura-providers
           retry_publish elura

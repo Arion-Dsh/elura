@@ -5,13 +5,28 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 authors.workspace = true
-description = "Connection and request load generator for Elura Gateways"
+readme = "README.md"
+description = "Internal transport load generator for Elura framework regression testing"
 publish = false
 
+[package.metadata.elura]
+audience = "framework-maintainers"
+purpose = "performance-regression"
+
 [dependencies]
+async-trait.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
 elura-core.workspace = true
+quinn.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+tokio-tungstenite.workspace = true
 tokio-util.workspace = true
+webpki-roots.workspace = true
+wtransport.workspace = true
+
+[dev-dependencies]
+elura-gateway.workspace = true

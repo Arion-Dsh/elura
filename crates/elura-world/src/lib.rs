@@ -33,8 +33,5 @@ pub use module::{WorldModule, WorldModuleRegistry};
 pub use routes::{Event, Route, RouteInfo};
 pub use server::{InProcessWorldClient, WorldDiagnostics, WorldServer};
 pub use stats::WorldStatsSnapshot;
-pub use testing::{
-    WorldHarness, WorldLoadConfig, WorldLoadLatency, WorldLoadReport, WorldTestClient,
-    test_identity,
-};
+pub use testing::{WorldHarness, WorldTestClient, test_identity};
 pub use world::World;

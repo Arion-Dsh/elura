@@ -4,7 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+description = "Internal distributed performance environment for Elura framework regression testing"
 publish = false
+
+[package.metadata.elura]
+audience = "framework-maintainers"
+purpose = "performance-regression"
 
 [dependencies]
 elura-adapters = { version = "0.2.5", path = "../../crates/elura-adapters", default-features = false, features = ["redis"] }

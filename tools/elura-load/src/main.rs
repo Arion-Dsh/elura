@@ -1,19 +1,21 @@
+mod transport;
+
 use std::collections::BTreeMap;
 use std::error::Error;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use elura_core::ErrorEnvelope;
-use elura_core::protocol::{Frame, FrameCodec, FrameKind, ROUTE_AUTHENTICATE};
+use elura_core::protocol::{Frame, FrameKind, ROUTE_AUTHENTICATE};
 use elura_core::session::Identity;
 use elura_core::ticket::TicketService;
-use futures_util::{SinkExt, StreamExt};
-use tokio::net::{TcpStream, lookup_host};
 use tokio::sync::Barrier;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
-use tokio_util::codec::Framed;
+
+use transport::{Connector, ConnectorConfig, LoadConnection, TransportKind};
 
 type AnyError = Box<dyn Error + Send + Sync>;
 type AnyResult<T> = std::result::Result<T, AnyError>;
@@ -24,12 +26,17 @@ fn invalid_input(message: impl Into<String>) -> AnyError {
 
 #[derive(Clone)]
 struct Config {
+    transport: TransportKind,
     address: String,
+    server_name: Option<String>,
+    path: String,
+    ca_certificate: Option<PathBuf>,
     connections: usize,
     requests_per_connection: usize,
     route: u32,
     payload_bytes: usize,
     max_payload: usize,
+    max_datagram_bytes: usize,
     timeout: Duration,
     batch_size: usize,
     ramp_interval: Duration,
@@ -44,12 +51,17 @@ struct Config {
 impl Config {
     fn parse() -> AnyResult<Option<Self>> {
         let mut config = Self {
+            transport: TransportKind::Tcp,
             address: "127.0.0.1:17000".into(),
+            server_name: None,
+            path: "/elura/game".into(),
+            ca_certificate: None,
             connections: 1_000,
             requests_per_connection: 100,
             route: 100,
             payload_bytes: 128,
             max_payload: 1 << 20,
+            max_datagram_bytes: 1200,
             timeout: Duration::from_secs(5),
             batch_size: 100,
             ramp_interval: Duration::from_millis(100),
@@ -73,12 +85,17 @@ impl Config {
                 .next()
                 .ok_or_else(|| invalid_input(format!("missing value for {argument}")))?;
             match argument.as_str() {
+                "--transport" => config.transport = value.parse()?,
                 "--address" => config.address = value,
+                "--server-name" => config.server_name = Some(value),
+                "--path" => config.path = value,
+                "--tls-ca" => config.ca_certificate = Some(value.into()),
                 "--connections" => config.connections = value.parse()?,
                 "--requests" => config.requests_per_connection = value.parse()?,
                 "--route" => config.route = value.parse()?,
                 "--payload-bytes" => config.payload_bytes = value.parse()?,
                 "--max-payload" => config.max_payload = value.parse()?,
+                "--max-datagram-bytes" => config.max_datagram_bytes = value.parse()?,
                 "--timeout-ms" => config.timeout = Duration::from_millis(value.parse()?),
                 "--batch-size" => config.batch_size = value.parse()?,
                 "--ramp-ms" => config.ramp_interval = Duration::from_millis(value.parse()?),
@@ -95,12 +112,20 @@ impl Config {
             || config.requests_per_connection == 0
             || config.route < 100
             || config.payload_bytes > config.max_payload
+            || config.max_datagram_bytes <= elura_core::protocol::HEADER_LEN
+            || config.max_datagram_bytes > 65_507
+            || (config.transport == TransportKind::Udp
+                && elura_core::protocol::HEADER_LEN
+                    .checked_add(config.payload_bytes)
+                    .is_none_or(|size| size > config.max_datagram_bytes))
             || config.batch_size == 0
             || config.timeout.is_zero()
             || config.region_id == 0
             || config.realm_id == 0
             || config.first_user_id <= 0
             || config.ticket_key.len() < 32
+            || !config.path.starts_with('/')
+            || config.path.contains(['?', '#'])
         {
             return Err(invalid_input(
                 "invalid load configuration; use --help for constraints",
@@ -152,6 +177,7 @@ impl Summary {
         self.authentication_micros.sort_unstable();
         self.request_micros.sort_unstable();
         let completed = self.request_micros.len() as f64;
+        println!("transport={}", config.transport);
         println!("connections.requested={}", config.connections);
         println!("connections.connected={}", self.connected);
         println!("connections.authenticated={}", self.authenticated);
@@ -182,15 +208,21 @@ impl Summary {
 
 #[tokio::main]
 async fn main() -> AnyResult<()> {
-    let Some(mut config) = Config::parse()? else {
+    let Some(config) = Config::parse()? else {
         return Ok(());
     };
-    let target = config.address.clone();
-    config.address = lookup_host(target.as_str())
-        .await?
-        .next()
-        .ok_or_else(|| invalid_input("load target did not resolve"))?
-        .to_string();
+    let connector = Arc::new(
+        Connector::new(ConnectorConfig {
+            transport: config.transport,
+            address: config.address.clone(),
+            server_name: config.server_name.clone(),
+            path: config.path.clone(),
+            max_payload: config.max_payload,
+            max_datagram_bytes: config.max_datagram_bytes,
+            ca_certificate: config.ca_certificate.clone(),
+        })
+        .await?,
+    );
     let tickets = Arc::new(TicketService::new(
         config.ticket_key.as_ref(),
         config.issuer.as_ref(),
@@ -206,8 +238,11 @@ async fn main() -> AnyResult<()> {
         for index in batch_start..batch_end {
             let config = config.clone();
             let tickets = tickets.clone();
+            let connector = connector.clone();
             let start_barrier = start_barrier.clone();
-            workers.spawn(async move { run_worker(index, config, tickets, start_barrier).await });
+            workers.spawn(async move {
+                run_worker(index, config, tickets, connector, start_barrier).await
+            });
         }
         if batch_end < config.connections && !config.ramp_interval.is_zero() {
             tokio::time::sleep(config.ramp_interval).await;
@@ -230,11 +265,12 @@ async fn run_worker(
     index: usize,
     config: Config,
     tickets: Arc<TicketService>,
+    connector: Arc<Connector>,
     start_barrier: Arc<Barrier>,
 ) -> WorkerResult {
-    let (mut result, framed) = prepare_worker(index, &config, &tickets).await;
+    let (mut result, connection) = prepare_worker(index, &config, &tickets, &connector).await;
     start_barrier.wait().await;
-    let Some(mut framed) = framed else {
+    let Some(mut connection) = connection else {
         return result;
     };
 
@@ -250,7 +286,7 @@ async fn run_worker(
             }
         };
         let request_started = Instant::now();
-        match exchange(&mut framed, request, config.timeout).await {
+        match exchange(connection.as_mut(), request, config.timeout).await {
             Ok(response)
                 if response.request_id == request_id && response.kind == FrameKind::Response =>
             {
@@ -268,23 +304,16 @@ async fn prepare_worker(
     index: usize,
     config: &Config,
     tickets: &TicketService,
-) -> (WorkerResult, Option<Framed<TcpStream, FrameCodec>>) {
+    connector: &Connector,
+) -> (WorkerResult, Option<Box<dyn LoadConnection>>) {
     let mut result = WorkerResult::default();
     let connected_at = Instant::now();
-    let stream = match timeout(config.timeout, TcpStream::connect(config.address.as_str())).await {
-        Ok(Ok(stream)) => stream,
+    let mut connection = match timeout(config.timeout, connector.connect()).await {
+        Ok(Ok(connection)) => connection,
         _ => return (result, None),
     };
     result.connected = true;
     result.connect_micros = Some(micros(connected_at.elapsed()));
-    if stream.set_nodelay(true).is_err() {
-        return (result, None);
-    }
-    let codec = match FrameCodec::new(config.max_payload) {
-        Ok(codec) => codec,
-        Err(_) => return (result, None),
-    };
-    let mut framed = Framed::new(stream, codec);
     let user_id = match config.first_user_id.checked_add(index as i64) {
         Some(user_id) => user_id,
         None => return (result, None),
@@ -309,7 +338,7 @@ async fn prepare_worker(
         Err(_) => return (result, None),
     };
     let authentication_started = Instant::now();
-    let response = match exchange(&mut framed, authentication, config.timeout).await {
+    let response = match exchange(connection.as_mut(), authentication, config.timeout).await {
         Ok(response) => response,
         Err(()) => {
             result.authentication_error = Some("CLIENT_IO_OR_TIMEOUT".into());
@@ -326,23 +355,28 @@ async fn prepare_worker(
     }
     result.authenticated = true;
     result.authentication_micros = Some(micros(authentication_started.elapsed()));
-    (result, Some(framed))
+    (result, Some(connection))
 }
 
 async fn exchange(
-    framed: &mut Framed<TcpStream, FrameCodec>,
+    connection: &mut dyn LoadConnection,
     request: Frame,
     deadline: Duration,
 ) -> std::result::Result<Frame, ()> {
-    timeout(deadline, framed.send(request))
+    let request_id = request.request_id;
+    timeout(deadline, connection.send(request))
         .await
         .map_err(|_| ())?
         .map_err(|_| ())?;
-    timeout(deadline, framed.next())
-        .await
-        .map_err(|_| ())?
-        .ok_or(())?
-        .map_err(|_| ())
+    loop {
+        let response = timeout(deadline, connection.receive())
+            .await
+            .map_err(|_| ())?
+            .map_err(|_| ())?;
+        if response.request_id == request_id {
+            return Ok(response);
+        }
+    }
 }
 
 fn micros(duration: Duration) -> u64 {
@@ -362,19 +396,26 @@ fn print_distribution(name: &str, values: &[u64]) {
 }
 
 fn percentile(sorted: &[u64], quantile: f64) -> u64 {
-    let index = ((sorted.len() - 1) as f64 * quantile).ceil() as usize;
-    sorted[index]
+    let rank = (sorted.len() as f64 * quantile).ceil() as usize;
+    sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
 }
 
 fn print_help() {
     println!(
-        "elura-load options:\n\
-         --address HOST:PORT          Gateway TCP address (default 127.0.0.1:17000)\n\
+        "elura-load — framework-internal performance regression tool\n\
+         Not an application dependency or supported upper-layer API.\n\n\
+         options:\n\
+         --transport NAME             tcp, udp, websocket, quic, webtransport (default tcp)\n\
+         --address HOST:PORT          Gateway transport address (default 127.0.0.1:17000)\n\
+         --path PATH                  WebSocket/WebTransport path (default /elura/game)\n\
+         --server-name NAME           QUIC/WebTransport TLS name (default address host)\n\
+         --tls-ca FILE                Additional PEM CA for QUIC/WebTransport\n\
          --connections N              Concurrent connections, e.g. 1000 or 10000\n\
          --requests N                 Requests per authenticated connection (default 100)\n\
          --route N                    Application route >= 100 (default 100)\n\
          --payload-bytes N            Request payload size (default 128)\n\
          --max-payload N              Frame payload limit (default 1048576)\n\
+         --max-datagram-bytes N       UDP datagram limit (default 1200)\n\
          --timeout-ms N               Per operation timeout (default 5000)\n\
          --batch-size N               Connections opened per ramp batch (default 100)\n\
          --ramp-ms N                  Delay between batches (default 100)\n\
@@ -384,4 +425,17 @@ fn print_help() {
          --region N --realm N         Identity region/realm (default 1/1)\n\
          --first-user-id N            First generated user ID (default 1)"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn calculates_nearest_rank_percentiles() {
+        let samples = (1..=100).collect::<Vec<_>>();
+        assert_eq!(percentile(&samples, 0.50), 50);
+        assert_eq!(percentile(&samples, 0.95), 95);
+        assert_eq!(percentile(&samples, 0.99), 99);
+    }
 }

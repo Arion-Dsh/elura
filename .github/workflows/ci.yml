@@ -89,6 +89,7 @@ jobs:
       - run: cargo package -p elura-lag-compensation --allow-dirty --list
       - run: cargo package -p elura-net-sim --allow-dirty --list
       - run: cargo package -p elura-monolith --allow-dirty --list
+      - run: cargo package -p elura-testkit --allow-dirty --list
       - run: cargo package -p elura-adapters --allow-dirty --list
       - run: cargo package -p elura-providers --allow-dirty --list
       - run: cargo package -p elura --allow-dirty --list
