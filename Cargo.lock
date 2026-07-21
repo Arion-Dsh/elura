@@ -982,6 +982,8 @@ dependencies = [
  "elura-runtime",
  "elura-simulation",
  "elura-world",
+ "prost",
+ "tokio",
 ]
 
 [[package]]

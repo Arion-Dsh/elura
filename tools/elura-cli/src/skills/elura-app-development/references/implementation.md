@@ -233,11 +233,46 @@ Define typed `Event` implementations and publish through `WorldContext` methods 
 Build a World and call routes without binding sockets:
 
 ```rust
+use elura::world::testing::test_identity;
+
 let server = World::new(WorldConfig::default())
     .route(ListItems, handle)
     .build()?;
 let harness = server.harness();
-let response = harness.call(ListItems, identity, ListItemsRequest {}).await?;
+let client = harness.client(test_identity(42))?;
+let response = client.call(ListItems, ListItemsRequest {}).await?;
 ```
 
-Use `call_in_session` when session continuity matters and `command_raw` only for wire/error-path tests. Assert response data and application state; use `routes()` and `stats()` for registration and execution diagnostics. Keep Gateway transport and end-to-end protocol tests separate from handler unit tests.
+The virtual client keeps one identity and session across calls, so use it for multi-step business
+flows. Use `WorldHarness::call_in_session` when a test must supply the session itself and
+`command_raw` only for wire/error-path tests. Assert response data and application state; use
+`routes()` and `stats()` for registration and execution diagnostics. Keep Gateway transport and
+end-to-end protocol tests separate from handler unit tests.
+
+For a repeatable in-process business-path load run, use the same harness with explicit virtual
+workers and a business scenario:
+
+```rust
+use elura::world::testing::{WorldLoadConfig, test_identity};
+
+let report = harness
+    .load_scenario(
+        WorldLoadConfig::new(32, 1_000),
+        |worker| test_identity(worker as i64 + 1),
+        |client, _worker, _iteration| async move {
+            let items = client.call(ListItems, ListItemsRequest {}).await?;
+            client.call(EquipItem, EquipItemRequest { id: items.items[0].id }).await?;
+            Ok(())
+        },
+    )
+    .await?;
+assert!(report.is_success());
+println!("ops={} p95={:?}", report.operations_per_second(), report.latency.p95);
+```
+
+Each worker keeps one session. Give workers distinct player identities when testing parallel
+execution because World intentionally serializes commands for the same player. One measured
+operation is one complete scenario iteration, even when the scenario calls several routes. Use
+`load_route` for the common single-route case. These load paths include route codecs, middleware,
+handler timeout and player serialization, but exclude Gateway, TLS and network costs; use
+`elura-load` and the performance Compose environment for end-to-end capacity tests.

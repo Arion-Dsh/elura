@@ -62,3 +62,7 @@ elura-net-sim = { workspace = true, optional = true }
 elura-monolith = { workspace = true, optional = true }
 elura-adapters = { workspace = true, optional = true, default-features = false }
 elura-providers = { workspace = true, optional = true, default-features = false }
+
+[dev-dependencies]
+prost.workspace = true
+tokio.workspace = true

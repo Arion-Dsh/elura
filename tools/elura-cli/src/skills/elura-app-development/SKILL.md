@@ -63,6 +63,6 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 ```
 
-For World business logic, prefer `World::build()?.harness()` and typed harness calls over opening network listeners. Add tests for success, invalid requests, authorization/identity rules, duplicate registrations, middleware effects, and relevant state changes. Use integration tests for transport, distributed adapter, TLS, or lifecycle behavior that the harness cannot cover.
+For World business logic, prefer `World::build()?.harness()`, a stable-session test client, and typed calls over opening network listeners. Use `load_scenario` for repeatable multi-route business-path load tests and `load_route` for a focused route workload. Add tests for success, invalid requests, authorization/identity rules, duplicate registrations, middleware effects, and relevant state changes. Use integration tests for transport, distributed adapter, TLS, or lifecycle behavior that the harness cannot cover.
 
 Finish by reporting changed behavior, public contracts introduced or changed, configuration/migration requirements, and the exact verification performed.

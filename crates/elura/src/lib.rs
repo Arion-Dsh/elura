@@ -151,7 +151,10 @@ pub mod world {
 
     /// In-process World test harness.
     pub mod testing {
-        pub use elura_world::WorldHarness;
+        pub use elura_world::{
+            WorldHarness, WorldLoadConfig, WorldLoadLatency, WorldLoadReport, WorldTestClient,
+            test_identity,
+        };
     }
 }
 
