@@ -137,6 +137,12 @@ impl RedisOnlineDirectory {
         &self.prefix
     }
 
+    fn capacity_key(&self, region_id: u32, realm_id: u32) -> String {
+        // Keep the sorted-set index separate from the legacy SET so rolling upgrades never
+        // issue commands against a key with the wrong Redis type. Both indexes are ephemeral.
+        self.key(&format!("capacity-expirations:{region_id}:{realm_id}"))
+    }
+
     pub async fn acquire(
         &self,
         mut lease: SessionLease,
@@ -159,10 +165,7 @@ impl RedisOnlineDirectory {
             "realm:{}:{}",
             lease.identity.region_id, lease.identity.realm_id
         ));
-        let capacity = self.key(&format!(
-            "capacity:{}:{}",
-            lease.identity.region_id, lease.identity.realm_id
-        ));
+        let capacity = self.capacity_key(lease.identity.region_id, lease.identity.realm_id);
         let script = redis::Script::new(
             r#"
 local session_id = ARGV[2]
@@ -170,35 +173,32 @@ local ttl = ARGV[3]
 local mode = ARGV[4]
 local maximum = tonumber(ARGV[5])
 local session_prefix = ARGV[6]
+local time = redis.call('TIME')
+local now = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
+local expires_at = now + tonumber(ttl)
 local previous = redis.call('GET', KEYS[3])
 
 if previous == session_id then previous = false end
 if previous and redis.call('EXISTS', session_prefix .. previous) == 0 then
   redis.call('DEL', KEYS[3])
-  redis.call('SREM', KEYS[6], previous)
+  redis.call('ZREM', KEYS[6], previous)
   previous = false
 end
 if mode == 'reject_new' and previous then
   return {'duplicate', previous}
 end
 
-local used = 0
-for _, id in ipairs(redis.call('SMEMBERS', KEYS[6])) do
-  if redis.call('EXISTS', session_prefix .. id) == 1 then
-    used = used + 1
-  else
-    redis.call('SREM', KEYS[6], id)
-  end
-end
+redis.call('ZREMRANGEBYSCORE', KEYS[6], '-inf', now)
+local used = redis.call('ZCARD', KEYS[6])
 local transfers = mode == 'kick_existing' and previous
-  and redis.call('SISMEMBER', KEYS[6], previous) == 1
+  and redis.call('ZSCORE', KEYS[6], previous) ~= false
 if transfers then used = used - 1 end
-local already = redis.call('SISMEMBER', KEYS[6], session_id) == 1
+local already = redis.call('ZSCORE', KEYS[6], session_id) ~= false
 if maximum > 0 and not already and used >= maximum then
   return {'full', ''}
 end
 
-if transfers then redis.call('SREM', KEYS[6], previous) end
+if transfers then redis.call('ZREM', KEYS[6], previous) end
 redis.call('SET', KEYS[1], ARGV[1], 'PX', ttl)
 redis.call('SADD', KEYS[2], session_id)
 redis.call('PEXPIRE', KEYS[2], ttl)
@@ -212,7 +212,7 @@ if #groups > 0 then
 end
 redis.call('SADD', KEYS[5], session_id)
 redis.call('PEXPIRE', KEYS[5], ttl)
-redis.call('SADD', KEYS[6], session_id)
+redis.call('ZADD', KEYS[6], expires_at, session_id)
 redis.call('PEXPIRE', KEYS[6], ttl)
 if mode == 'kick_existing' then return {'accepted', previous or ''} end
 return {'accepted', ''}
@@ -259,11 +259,14 @@ return {'accepted', ''}
         let script = redis::Script::new(
             r#"
 if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
+local time = redis.call('TIME')
+local now = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
 redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[3])
 redis.call('PEXPIRE', KEYS[2], ARGV[3])
 if redis.call('GET', KEYS[3]) == ARGV[2] then redis.call('PEXPIRE', KEYS[3], ARGV[3]) end
 redis.call('PEXPIRE', KEYS[4], ARGV[3])
 redis.call('PEXPIRE', KEYS[5], ARGV[3])
+redis.call('ZADD', KEYS[6], now + tonumber(ARGV[3]), ARGV[2])
 redis.call('PEXPIRE', KEYS[6], ARGV[3])
 for _, group in ipairs(redis.call('SMEMBERS', KEYS[4])) do
   redis.call('PEXPIRE', group, ARGV[3])
@@ -287,10 +290,7 @@ return 1
                 "realm:{}:{}",
                 identity.region_id, identity.realm_id
             )))
-            .key(self.key(&format!(
-                "capacity:{}:{}",
-                identity.region_id, identity.realm_id
-            )))
+            .key(self.capacity_key(identity.region_id, identity.realm_id))
             .arg(payload)
             .arg(lease.session_id.to_string())
             .arg(self.ttl.as_millis())
@@ -332,7 +332,7 @@ redis.call('DEL', KEYS[1])
 redis.call('DEL', KEYS[2])
 redis.call('SREM', KEYS[3], ARGV[1])
 redis.call('SREM', KEYS[4], ARGV[1])
-redis.call('SREM', KEYS[5], ARGV[1])
+redis.call('ZREM', KEYS[5], ARGV[1])
 if redis.call('GET', KEYS[6]) == ARGV[1] then redis.call('DEL', KEYS[6]) end
 for index = 2, #ARGV do redis.call('SREM', ARGV[index], ARGV[1]) end
 return 1
@@ -349,10 +349,7 @@ return 1
                 "realm:{}:{}",
                 identity.region_id, identity.realm_id
             )))
-            .key(self.key(&format!(
-                "capacity:{}:{}",
-                identity.region_id, identity.realm_id
-            )))
+            .key(self.capacity_key(identity.region_id, identity.realm_id))
             .key(self.key(&format!(
                 "single:{}:{}:{}",
                 identity.region_id, identity.realm_id, identity.user_id

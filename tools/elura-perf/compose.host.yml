@@ -1,0 +1,4 @@
+services:
+  load-balancer:
+    ports:
+      - "${ELURA_PERF_BIND_ADDRESS:-0.0.0.0}:${ELURA_PERF_PORT:-17000}:17000"

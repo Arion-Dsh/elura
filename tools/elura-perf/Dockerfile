@@ -1,8 +1,14 @@
-FROM rust:1.94-slim-bookworm AS builder
+FROM rust:1.97-slim-bookworm AS builder
+
+ARG RUSTUP_DIST_SERVER=https://static.rust-lang.org
+ARG RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup
+ENV RUSTUP_DIST_SERVER=${RUSTUP_DIST_SERVER} \
+    RUSTUP_UPDATE_ROOT=${RUSTUP_UPDATE_ROOT}
 
 WORKDIR /src
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/rustup \
     --mount=type=cache,target=/src/target \
     cargo build --release -p elura-perf -p elura-load \
     && mkdir /out \

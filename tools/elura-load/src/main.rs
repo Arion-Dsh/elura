@@ -1,8 +1,10 @@
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use elura_core::ErrorEnvelope;
 use elura_core::protocol::{Frame, FrameCodec, FrameKind, ROUTE_AUTHENTICATE};
 use elura_core::session::Identity;
 use elura_core::ticket::TicketService;
@@ -114,6 +116,7 @@ struct WorkerResult {
     authenticated: bool,
     connect_micros: Option<u64>,
     authentication_micros: Option<u64>,
+    authentication_error: Option<String>,
     request_micros: Vec<u64>,
     request_errors: u64,
 }
@@ -124,6 +127,7 @@ struct Summary {
     authenticated: usize,
     connect_micros: Vec<u64>,
     authentication_micros: Vec<u64>,
+    authentication_errors: BTreeMap<String, u64>,
     request_micros: Vec<u64>,
     request_errors: u64,
     task_errors: u64,
@@ -136,6 +140,9 @@ impl Summary {
         self.connect_micros.extend(result.connect_micros);
         self.authentication_micros
             .extend(result.authentication_micros);
+        if let Some(error) = result.authentication_error {
+            *self.authentication_errors.entry(error).or_default() += 1;
+        }
         self.request_micros.extend(result.request_micros);
         self.request_errors += result.request_errors;
     }
@@ -152,6 +159,9 @@ impl Summary {
             "connections.failed={}",
             config.connections.saturating_sub(self.authenticated)
         );
+        for (error, count) in &self.authentication_errors {
+            println!("authentication.errors.{error}={count}");
+        }
         println!("requests.completed={}", self.request_micros.len());
         println!("requests.errors={}", self.request_errors);
         println!("tasks.errors={}", self.task_errors);
@@ -301,9 +311,17 @@ async fn prepare_worker(
     let authentication_started = Instant::now();
     let response = match exchange(&mut framed, authentication, config.timeout).await {
         Ok(response) => response,
-        Err(()) => return (result, None),
+        Err(()) => {
+            result.authentication_error = Some("CLIENT_IO_OR_TIMEOUT".into());
+            return (result, None);
+        }
     };
     if response.kind != FrameKind::Response {
+        result.authentication_error = Some(
+            ErrorEnvelope::from_slice(&response.payload)
+                .map(|error| error.code)
+                .unwrap_or_else(|_| "INVALID_ERROR_RESPONSE".into()),
+        );
         return (result, None);
     }
     result.authenticated = true;

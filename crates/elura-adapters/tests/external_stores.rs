@@ -206,7 +206,7 @@ async fn redis_online_renewal_extends_single_session_claim() {
     let Some(url) = configured_url("ELURA_TEST_REDIS_URL") else {
         return;
     };
-    let ttl = Duration::from_millis(120);
+    let ttl = Duration::from_secs(1);
     let directory = RedisOnlineDirectory::connect(
         &url,
         format!("elura-test-online-{}", uuid::Uuid::new_v4()),
@@ -235,9 +235,9 @@ async fn redis_online_renewal_extends_single_session_claim() {
             .unwrap(),
         OnlineAdmission::Accepted { .. }
     ));
-    tokio::time::sleep(Duration::from_millis(80)).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
     directory.renew(lease).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(80)).await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
     let challenger = SessionLease {
         session_id: uuid::Uuid::new_v4(),
         gateway_id: "gateway-2".into(),
@@ -260,13 +260,10 @@ async fn redis_online_admission_atomically_enforces_realm_capacity() {
         return;
     };
     let ttl = Duration::from_secs(30);
-    let directory = RedisOnlineDirectory::connect(
-        &url,
-        format!("elura-test-capacity-{}", uuid::Uuid::new_v4()),
-        ttl,
-    )
-    .await
-    .unwrap();
+    let prefix = format!("elura-test-capacity-{}", uuid::Uuid::new_v4());
+    let directory = RedisOnlineDirectory::connect(&url, prefix.clone(), ttl)
+        .await
+        .unwrap();
     let make_lease = |user_id| SessionLease {
         session_id: uuid::Uuid::new_v4(),
         gateway_id: "gateway-1".into(),
@@ -296,6 +293,107 @@ async fn redis_online_admission_atomically_enforces_realm_capacity() {
         directory.acquire(second, bounded).await.unwrap(),
         OnlineAdmission::Accepted { .. }
     ));
+
+    let client = redis::Client::open(url).unwrap();
+    let mut connection = client.get_connection_manager().await.unwrap();
+    let index_type: String = redis::cmd("TYPE")
+        .arg(format!("{prefix}:capacity-expirations:1:1"))
+        .query_async(&mut connection)
+        .await
+        .unwrap();
+    assert_eq!(index_type, "zset");
+}
+
+#[tokio::test]
+#[cfg(feature = "redis")]
+async fn redis_online_capacity_reclaims_expired_slots() {
+    let Some(url) = configured_url("ELURA_TEST_REDIS_URL") else {
+        return;
+    };
+    let ttl = Duration::from_millis(80);
+    let directory = RedisOnlineDirectory::connect(
+        &url,
+        format!("elura-test-capacity-expiry-{}", uuid::Uuid::new_v4()),
+        ttl,
+    )
+    .await
+    .unwrap();
+    let make_lease = |user_id| SessionLease {
+        session_id: uuid::Uuid::new_v4(),
+        gateway_id: "gateway-1".into(),
+        identity: Identity {
+            account_id: user_id,
+            user_id,
+            region_id: 1,
+            realm_id: 1,
+            generation: 1,
+        },
+        expires_at: SystemTime::now() + ttl,
+    };
+    let bounded = OnlineAdmissionPolicy::new(DuplicateLoginMode::AllowMultiple, Some(1)).unwrap();
+
+    assert!(matches!(
+        directory.acquire(make_lease(1), bounded).await.unwrap(),
+        OnlineAdmission::Accepted { .. }
+    ));
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    assert!(matches!(
+        directory.acquire(make_lease(2), bounded).await.unwrap(),
+        OnlineAdmission::Accepted { .. }
+    ));
+}
+
+#[tokio::test]
+#[cfg(feature = "redis")]
+async fn redis_online_capacity_is_atomic_under_concurrent_admission() {
+    let Some(url) = configured_url("ELURA_TEST_REDIS_URL") else {
+        return;
+    };
+    let ttl = Duration::from_secs(30);
+    let directory = RedisOnlineDirectory::connect(
+        &url,
+        format!("elura-test-capacity-race-{}", uuid::Uuid::new_v4()),
+        ttl,
+    )
+    .await
+    .unwrap();
+    let bounded = OnlineAdmissionPolicy::new(DuplicateLoginMode::AllowMultiple, Some(8)).unwrap();
+    let mut tasks = tokio::task::JoinSet::new();
+    for user_id in 1..=32 {
+        let directory = directory.clone();
+        tasks.spawn(async move {
+            directory
+                .acquire(
+                    SessionLease {
+                        session_id: uuid::Uuid::new_v4(),
+                        gateway_id: "gateway-1".into(),
+                        identity: Identity {
+                            account_id: user_id,
+                            user_id,
+                            region_id: 1,
+                            realm_id: 1,
+                            generation: 1,
+                        },
+                        expires_at: SystemTime::now() + ttl,
+                    },
+                    bounded,
+                )
+                .await
+                .unwrap()
+        });
+    }
+
+    let mut accepted = 0;
+    let mut full = 0;
+    while let Some(result) = tasks.join_next().await {
+        match result.unwrap() {
+            OnlineAdmission::Accepted { .. } => accepted += 1,
+            OnlineAdmission::RealmFull => full += 1,
+            OnlineAdmission::Duplicate => panic!("users are unique"),
+        }
+    }
+    assert_eq!(accepted, 8);
+    assert_eq!(full, 24);
 }
 
 #[tokio::test]

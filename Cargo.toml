@@ -88,7 +88,7 @@ tokio-tungstenite = "0.30.0"
 tracing = "0.1.44"
 tracing-opentelemetry = "0.33"
 url = "2.5.8"
-uuid = { version = "1.24.0", features = ["v4", "serde"] }
+uuid = { version = "1.24.0", features = ["v4", "serde", "fast-rng"] }
 webpki-roots = "1.0.8"
 wtransport = { version = "0.7.1", default-features = false, features = ["ring"] }
 x509-parser = { version = "0.18", features = ["verify"] }

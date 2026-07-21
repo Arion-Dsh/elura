@@ -11,9 +11,12 @@ services:
     build:
       context: ../..
       dockerfile: tools/elura-perf/Dockerfile
+      args:
+        RUSTUP_DIST_SERVER: "${RUSTUP_DIST_SERVER:-https://static.rust-lang.org}"
+        RUSTUP_UPDATE_ROOT: "${RUSTUP_UPDATE_ROOT:-https://static.rust-lang.org/rustup}"
     command: /app/elura-perf-world
     environment:
-      ELURA_WORLD_IN_FLIGHT: "64"
+      ELURA_WORLD_IN_FLIGHT: "${ELURA_WORLD_IN_FLIGHT:-64}"
       ELURA_INTERNAL_TOKEN: elura-rs-perf-internal-token-2026
     restart: unless-stopped
 
@@ -24,8 +27,8 @@ services:
       ELURA_GATEWAY_ID: perf-gateway-1
       ELURA_REDIS_URL: redis://redis:6379/
       ELURA_WORLD_ADDRESS: world:18000
-      ELURA_WORLD_POOL_SIZE: "16"
-      ELURA_WORLD_IN_FLIGHT: "64"
+      ELURA_WORLD_POOL_SIZE: "${ELURA_WORLD_POOL_SIZE:-32}"
+      ELURA_WORLD_IN_FLIGHT: "${ELURA_WORLD_IN_FLIGHT:-64}"
       ELURA_MAX_CONNECTIONS: "12000"
       ELURA_MAX_CONNECTIONS_PER_IP: "12000"
       ELURA_IP_REQUEST_RATE: "0"
@@ -44,8 +47,8 @@ services:
       ELURA_GATEWAY_ID: perf-gateway-2
       ELURA_REDIS_URL: redis://redis:6379/
       ELURA_WORLD_ADDRESS: world:18000
-      ELURA_WORLD_POOL_SIZE: "16"
-      ELURA_WORLD_IN_FLIGHT: "64"
+      ELURA_WORLD_POOL_SIZE: "${ELURA_WORLD_POOL_SIZE:-32}"
+      ELURA_WORLD_IN_FLIGHT: "${ELURA_WORLD_IN_FLIGHT:-64}"
       ELURA_MAX_CONNECTIONS: "12000"
       ELURA_MAX_CONNECTIONS_PER_IP: "12000"
       ELURA_IP_REQUEST_RATE: "0"

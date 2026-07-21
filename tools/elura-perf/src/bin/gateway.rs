@@ -45,7 +45,7 @@ async fn main() -> AnyResult<()> {
     let max_connections_per_ip = env_parse("ELURA_MAX_CONNECTIONS_PER_IP", "20000")?;
     let ip_request_rate = env_parse("ELURA_IP_REQUEST_RATE", "0")?;
     let ip_request_burst = env_parse("ELURA_IP_REQUEST_BURST", "0")?;
-    let world_pool_size = env_parse("ELURA_WORLD_POOL_SIZE", "16")?;
+    let world_pool_size = env_parse("ELURA_WORLD_POOL_SIZE", "32")?;
     let world_in_flight = env_parse("ELURA_WORLD_IN_FLIGHT", "64")?;
     let gateway_id = env_value("ELURA_GATEWAY_ID", "gateway-1");
     let redis_url = env_value("ELURA_REDIS_URL", "redis://redis:6379/");
