@@ -5,6 +5,7 @@
 **A modular Rust framework for online game servers.**
 
 [![CI](https://github.com/Arion-Dsh/elura/actions/workflows/ci.yml/badge.svg)](https://github.com/Arion-Dsh/elura/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/elura.svg)](https://crates.io/crates/elura)
 [![Rust 1.97+](https://img.shields.io/badge/rust-1.97%2B-dea584.svg?logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
@@ -28,9 +29,16 @@ or run together as a monolith.
 Install the CLI and scaffold an application:
 
 ```bash
-cargo install elura-cli
+cargo install elura-cli --version 0.2.5
 elura skill install
 elura init all --dir .
+```
+
+Or add the framework directly:
+
+```toml
+[dependencies]
+elura = "0.2.5"
 ```
 
 The skill is installed in `.agents/skills/elura-app-development` for project-level coding agents.
