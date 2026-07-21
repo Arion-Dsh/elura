@@ -25,7 +25,13 @@ jobs:
           retry_publish() {
             package="$1"
             for attempt in $(seq 1 12); do
-              if cargo publish -p "$package"; then
+              if output="$(cargo publish --color never -p "$package" 2>&1)"; then
+                printf '%s\n' "$output"
+                return 0
+              fi
+              printf '%s\n' "$output"
+              if [[ "$output" == *"already exists on crates.io index"* ]]; then
+                echo "$package is already published; continuing"
                 return 0
               fi
               if [ "$attempt" -eq 12 ]; then
