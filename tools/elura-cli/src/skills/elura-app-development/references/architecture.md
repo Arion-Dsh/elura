@@ -10,6 +10,19 @@
 
 Gateway owns client transports, tickets, sessions, admission, routing to Worlds, and connection-oriented push delivery. World owns typed commands, modules, middleware, player state, and game behavior. Do not move business rules into Gateway interceptors merely because requests pass through Gateway.
 
+## Client SDK transport boundary
+
+Generated client SDKs own the ELR2 wire contract, authentication and reconnect payloads, heartbeat
+handling, and Session Control encoding. The application owns socket creation, timeouts, reconnect
+policy, request-to-response correlation, and application-route payloads.
+
+The Rust SDK has no async-runtime dependency by default. Use `Elr2Codec::encode` and
+`Elr2Codec::decode` for WebSocket messages, UDP packets, and QUIC Datagrams. For TCP, TLS, or a
+compatible QUIC byte stream in a Tokio application, enable `elura-protocol`'s `tokio-codec`
+feature, depend directly on `tokio-util` with its `codec` feature, and wrap the stream in
+`tokio_util::codec::Framed`. Do not enable the Tokio adapter for message-oriented transports solely
+to access the core codec.
+
 ## Stateful scenes
 
 Use `elura::world::scene::SceneRuntime` when multiple players mutate one scene, room, battle, or

@@ -24,12 +24,18 @@ Use the smallest generator matching the task:
 elura init all --dir .
 elura init module --name inventory --dir .
 elura init route --module inventory --name list_items --id 120 --dir .
+elura init sdk --language rust --dir .
 elura init sdk --language typescript --dir .
 ```
 
 Run with `--dry-run` before generating into a non-empty project. Do not use `--force` until the conflicting files have been inspected and overwriting them is intended.
 
 Adapt generated code instead of recreating framework bootstrapping from memory. Keep application policy, configuration loading, adapter selection, and secrets in the upper application.
+
+Generated Rust SDKs are async-runtime independent by default. Use their direct
+`Elr2Codec::encode`/`decode` APIs for message-oriented transports. For Tokio TCP, TLS, or compatible
+QUIC byte streams, enable the SDK's `tokio-codec` feature and add a direct `tokio-util` dependency
+with its `codec` feature before wrapping the stream in `Framed`.
 
 ## Implement application behavior
 

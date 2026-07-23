@@ -12,7 +12,7 @@ audience = "framework-maintainers"
 purpose = "performance-regression"
 
 [dependencies]
-elura-adapters = { version = "0.2.8", path = "../../crates/elura-adapters", default-features = false, features = ["redis"] }
+elura-adapters = { version = "0.2.9", path = "../../crates/elura-adapters", default-features = false, features = ["redis"] }
 elura-core.workspace = true
 elura-gateway.workspace = true
 elura-runtime.workspace = true

@@ -96,7 +96,7 @@ receive the server-owned ELR2 `Session` identity.
 Install the CLI and scaffold an application:
 
 ```bash
-cargo install elura-cli --version 0.2.8
+cargo install elura-cli --version 0.2.9
 elura skill install
 elura init all --dir .
 ```
@@ -105,12 +105,49 @@ Or add the framework directly:
 
 ```toml
 [dependencies]
-elura = "0.2.8"
+elura = "0.2.9"
 ```
 
 The skill is installed in `.agents/skills/elura-app-development` for project-level coding agents.
 See the [documentation](https://elura.rustyspottedcat.dev/) for concepts, configuration, crate
 features, deployment, and tutorials.
+
+## Client SDKs
+
+Generate standalone ELR2 client SDKs without depending on the server-side Elura crates:
+
+```bash
+elura init sdk --language rust --dir .
+elura init sdk --language typescript --dir .
+elura init sdk --language csharp --dir .
+elura init sdk --language cpp --dir .
+```
+
+The Rust SDK is runtime-independent by default. Its frame encoding, authentication, reconnect,
+heartbeat, and Session Control APIs work without Tokio. WebSocket, UDP, and QUIC Datagram clients
+can use `Elr2Codec::encode` and `Elr2Codec::decode` directly.
+
+Enable the optional `tokio-codec` feature when a Tokio byte stream needs ELR2 framing:
+
+```toml
+[dependencies]
+elura-protocol = { path = "sdk/rust", features = ["tokio-codec"] }
+futures-util = { version = "0.3", features = ["sink"] }
+tokio = { version = "1", features = ["net", "macros", "rt-multi-thread"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+```
+
+```rust,ignore
+use elura_protocol::Elr2Codec;
+use tokio::net::TcpStream;
+use tokio_util::codec::Framed;
+
+let stream = TcpStream::connect(gateway_address).await?;
+let connection = Framed::new(stream, Elr2Codec::default());
+```
+
+See [`tiny-network-game`](examples/tiny-network-game) for authentication, request timeouts,
+reconnects, and application-route calls over `Framed<TcpStream, Elr2Codec>`.
 
 ## Examples
 

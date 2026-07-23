@@ -1138,8 +1138,12 @@ mod tests {
         assert!(typescript.contains("export const Elr2"));
         assert!(typescript_elura.contains("export const EluraProtocol"));
         assert!(rust_manifest.contains(&format!("version = \"{version}\"")));
+        assert!(rust_manifest.contains("default = []"));
+        assert!(rust_manifest.contains("tokio-codec = [\"dep:tokio-util\"]"));
+        assert!(rust_manifest.contains("optional = true"));
         assert!(rust.contains("pub struct Elr2Frame"));
         assert!(rust.contains("pub struct EluraProtocol"));
+        assert!(rust.contains("#[cfg(feature = \"tokio-codec\")]"));
     }
 
     #[test]

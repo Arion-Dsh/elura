@@ -1,11 +1,13 @@
 //! Standalone Rust client implementation of the Elura ELR2 protocol.
 
 use std::fmt;
+#[cfg(feature = "tokio-codec")]
 use std::io;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use prost::Message;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "tokio-codec")]
 use tokio_util::codec::{Decoder, Encoder};
 
 pub const ELR2_MAGIC: u32 = 0x454c5232;
@@ -158,10 +160,12 @@ pub type ProtocolResult<T> = Result<T, Elr2ProtocolError>;
 
 #[derive(Debug, Clone)]
 pub struct Elr2Codec {
+    #[cfg(feature = "tokio-codec")]
     max_payload: usize,
 }
 
 impl Elr2Codec {
+    #[cfg(feature = "tokio-codec")]
     pub fn new(max_payload: usize) -> ProtocolResult<Self> {
         validate_limit(max_payload)?;
         Ok(Self { max_payload })
@@ -207,7 +211,8 @@ impl Elr2Codec {
         decode_bytes(Bytes::copy_from_slice(message), max_payload)
     }
 
-    pub fn decode_message(&self, message: Bytes) -> io::Result<Elr2Frame> {
+    #[cfg(feature = "tokio-codec")]
+    fn decode_message(&self, message: Bytes) -> io::Result<Elr2Frame> {
         decode_bytes(message, self.max_payload).map_err(protocol_io_error)
     }
 }
@@ -215,11 +220,13 @@ impl Elr2Codec {
 impl Default for Elr2Codec {
     fn default() -> Self {
         Self {
+            #[cfg(feature = "tokio-codec")]
             max_payload: DEFAULT_MAX_PAYLOAD,
         }
     }
 }
 
+#[cfg(feature = "tokio-codec")]
 impl Decoder for Elr2Codec {
     type Item = Elr2Frame;
     type Error = io::Error;
@@ -242,6 +249,7 @@ impl Decoder for Elr2Codec {
     }
 }
 
+#[cfg(feature = "tokio-codec")]
 impl Encoder<Elr2Frame> for Elr2Codec {
     type Error = io::Error;
 
@@ -313,6 +321,7 @@ fn write_frame(frame: &Elr2Frame, output: &mut BytesMut) {
     output.put_slice(&frame.payload);
 }
 
+#[cfg(feature = "tokio-codec")]
 fn protocol_io_error(error: Elr2ProtocolError) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error)
 }

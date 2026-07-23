@@ -3,10 +3,11 @@ use elura_protocol::{
     ELR2_VERSION, Elr2Codec, Elr2Frame, EluraProtocol, EluraRoutes, FrameKind, Identity,
     ReconnectTicketResponse, SessionControl, SessionControlAction, SessionControlCodec,
 };
+#[cfg(feature = "tokio-codec")]
 use tokio_util::codec::{Decoder, Encoder};
 
 #[test]
-fn elr2_v2_golden_vector_and_stream_round_trip() {
+fn elr2_v2_golden_vector_round_trip() {
     assert_eq!(ELR2_VERSION, 2);
     let request = Elr2Frame::request_with_sequence(100, 7, 11, "hello").unwrap();
     let expected = [
@@ -16,7 +17,12 @@ fn elr2_v2_golden_vector_and_stream_round_trip() {
     ];
     assert_eq!(Elr2Codec::encode(&request).unwrap().as_ref(), expected);
     assert_eq!(Elr2Codec::decode(&expected).unwrap(), request);
+}
 
+#[cfg(feature = "tokio-codec")]
+#[test]
+fn tokio_codec_stream_round_trip() {
+    let request = Elr2Frame::request_with_sequence(100, 7, 11, "hello").unwrap();
     let mut encoded = bytes::BytesMut::new();
     Elr2Codec::default()
         .encode(request.clone(), &mut encoded)

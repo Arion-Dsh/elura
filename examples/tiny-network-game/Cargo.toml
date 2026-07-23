@@ -1,6 +1,6 @@
 [package]
 name = "elura-spot-demo"
-version = "0.2.8"
+version = "0.2.9"
 edition = "2024"
 publish = false
 
@@ -9,7 +9,7 @@ resolver = "3"
 
 [dependencies]
 elura = { path = "../../crates/elura", features = ["monolith"] }
-elura-protocol = { path = "sdk/rust" }
+elura-protocol = { path = "sdk/rust", features = ["tokio-codec"] }
 futures-util = { version = "0.3.32", features = ["sink"] }
 prost = "0.14.4"
 spottedcat = "1.0.2"

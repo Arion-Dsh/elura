@@ -15,6 +15,31 @@ The checked-in Rust SDK is generated with:
 cargo run -p elura-cli -- init sdk --language rust --dir examples/tiny-network-game
 ```
 
+## Rust SDK stream integration
+
+The SDK keeps Tokio support optional. This application enables its `tokio-codec`
+feature and depends directly on `tokio-util`:
+
+```toml
+elura-protocol = { path = "sdk/rust", features = ["tokio-codec"] }
+tokio-util = { version = "0.7.18", features = ["codec"] }
+```
+
+The client wraps `TcpStream` with the SDK codec:
+
+```rust
+let stream = TcpStream::connect(address).await?;
+let mut connection = Framed::new(stream, Elr2Codec::default());
+
+connection
+    .send(EluraProtocol::authenticate(1, login_ticket)?)
+    .await?;
+let response = connection.next().await;
+```
+
+See `src/bin/client.rs` for authentication, request timeouts, reconnects, and
+application-route calls.
+
 ## Run
 
 From the `horizon-rs` repository root, start the server:

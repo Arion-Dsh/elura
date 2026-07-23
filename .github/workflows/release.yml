@@ -42,6 +42,7 @@ jobs:
           }
           retry_publish elura-core
           retry_publish elura-runtime
+          retry_publish elura-providers
           retry_publish elura-gateway
           retry_publish elura-world
           retry_publish elura-room
@@ -54,6 +55,5 @@ jobs:
           retry_publish elura-monolith
           retry_publish elura-testkit
           retry_publish elura-adapters
-          retry_publish elura-providers
           retry_publish elura
           retry_publish elura-cli
