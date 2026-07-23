@@ -18,11 +18,13 @@ inline constexpr std::size_t kDefaultMaxPayload = 1U << 20U;
 inline constexpr std::size_t kAbsoluteMaxPayload = 64U << 20U;
 inline constexpr const char* kProtocolIdentifier = "{{PROTOCOL_IDENTIFIER}}";
 
-inline constexpr std::uint32_t kRouteAuthenticate = 1;
-inline constexpr std::uint32_t kRouteHeartbeat = 2;
-inline constexpr std::uint32_t kRouteReconnect = 3;
-inline constexpr std::uint32_t kRouteSessionControl = 4;
-inline constexpr std::uint32_t kFirstApplicationRoute = 100;
+struct EluraRoutes {
+  static constexpr std::uint32_t Authenticate = 1;
+  static constexpr std::uint32_t Heartbeat = 2;
+  static constexpr std::uint32_t RenewReconnectTicket = 3;
+  static constexpr std::uint32_t SessionControl = 4;
+  static constexpr std::uint32_t FirstApplication = 100;
+};
 
 enum class FrameKind : std::uint8_t {
   Request = 1,
@@ -36,7 +38,7 @@ using Bytes = std::vector<std::uint8_t>;
 [[nodiscard]] Bytes to_bytes(std::string_view text);
 [[nodiscard]] std::string_view as_string(std::span<const std::uint8_t> bytes) noexcept;
 
-struct Frame {
+struct Elr2Frame {
   FrameKind kind = FrameKind::Request;
   std::uint8_t flags = 0;
   std::uint32_t route = 0;
@@ -44,34 +46,38 @@ struct Frame {
   std::uint32_t sequence = 0;
   Bytes payload;
 
-  [[nodiscard]] static Frame request(
+  [[nodiscard]] static Elr2Frame request(
       std::uint32_t route, std::uint64_t request_id, Bytes payload = {},
       std::uint32_t sequence = 0);
-  [[nodiscard]] static Frame response(const Frame& request, Bytes payload = {});
-  [[nodiscard]] static Frame error(const Frame& request, Bytes payload = {});
-  [[nodiscard]] static Frame push(
+  [[nodiscard]] static Elr2Frame response(const Elr2Frame& request, Bytes payload = {});
+  [[nodiscard]] static Elr2Frame error(const Elr2Frame& request, Bytes payload = {});
+  [[nodiscard]] static Elr2Frame push(
       std::uint32_t route, Bytes payload = {}, std::uint32_t sequence = 0);
 
-  bool operator==(const Frame&) const = default;
+  bool operator==(const Elr2Frame&) const = default;
 };
 
-class ProtocolError : public std::runtime_error {
+class Elr2ProtocolError : public std::runtime_error {
  public:
   using std::runtime_error::runtime_error;
 };
 
-void validate_frame(const Frame& frame, std::size_t max_payload = kDefaultMaxPayload);
-[[nodiscard]] Bytes encode_frame(
-    const Frame& frame, std::size_t max_payload = kDefaultMaxPayload);
-[[nodiscard]] Frame decode_frame(
-    std::span<const std::uint8_t> bytes,
-    std::size_t max_payload = kDefaultMaxPayload);
-
-class StreamDecoder {
+class Elr2Codec {
  public:
-  explicit StreamDecoder(std::size_t max_payload = kDefaultMaxPayload);
+  static void validate(
+      const Elr2Frame& frame, std::size_t max_payload = kDefaultMaxPayload);
+  [[nodiscard]] static Bytes encode(
+      const Elr2Frame& frame, std::size_t max_payload = kDefaultMaxPayload);
+  [[nodiscard]] static Elr2Frame decode(
+      std::span<const std::uint8_t> bytes,
+      std::size_t max_payload = kDefaultMaxPayload);
+};
+
+class Elr2StreamDecoder {
+ public:
+  explicit Elr2StreamDecoder(std::size_t max_payload = kDefaultMaxPayload);
   void append(std::span<const std::uint8_t> bytes);
-  [[nodiscard]] std::optional<Frame> next();
+  [[nodiscard]] std::optional<Elr2Frame> next();
   [[nodiscard]] std::size_t buffered() const noexcept { return buffer_.size(); }
   [[nodiscard]] bool empty() const noexcept { return buffer_.empty(); }
 
@@ -90,7 +96,7 @@ struct Identity {
 };
 
 struct AuthenticateRequest { std::string ticket; };
-struct ReconnectTicketRequest { std::string ticket; };
+struct ReconnectTicketRenewalRequest { std::string ticket; };
 struct ReconnectTicketResponse {
   std::string ticket;
   std::uint64_t expires_in_seconds = 0;
@@ -109,10 +115,13 @@ struct ErrorEnvelope {
 
 void validate_identity(const Identity& identity);
 void validate_error_envelope(const ErrorEnvelope& envelope);
-void validate_client_frame(
-    const Frame& frame, bool authenticated,
-    std::optional<std::uint64_t> pending_heartbeat = std::nullopt);
-Frame heartbeat_response(const Frame& request);
+class EluraProtocol {
+ public:
+  static void validate_client_frame(
+      const Elr2Frame& frame, bool authenticated,
+      std::optional<std::uint64_t> pending_heartbeat = std::nullopt);
+  [[nodiscard]] static Elr2Frame heartbeat_response(const Elr2Frame& request);
+};
 
 enum class SessionControlAction : std::int32_t {
   Kick = 1,

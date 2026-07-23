@@ -3,11 +3,17 @@
 This example is a deliberately small authoritative multiplayer arena:
 
 - Elura accepts TCP clients, authenticates demo tickets, routes movement commands, and owns player positions.
+- The client uses the generated, standalone Rust SDK in `sdk/rust` for ELR2 framing and authentication.
 - Spottedcat opens the native game window and reads WASD/arrow input.
 - Remote players use snapshot interpolation; the local player uses input prediction with gentle server reconciliation.
 - Green is the local player; pink squares are other connected players.
 
 It uses the published `spottedcat` crate from crates.io; no sibling checkout is required.
+The checked-in Rust SDK is generated with:
+
+```bash
+cargo run -p elura-cli -- init sdk --language rust --dir examples/tiny-network-game
+```
 
 ## Run
 

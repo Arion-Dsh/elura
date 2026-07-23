@@ -3,9 +3,8 @@ use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bytes::Bytes;
-use elura::core::protocol::{Frame, FrameCodec, FrameKind, ROUTE_AUTHENTICATE};
 use elura::prelude::*;
+use elura_protocol::{Elr2Codec, Elr2Frame, EluraProtocol, FrameKind};
 use elura_spot_demo::{Arena, DEMO_TICKET_KEY, Move, MoveRequest, ROUTE_MOVE, Snapshot};
 use futures_util::{SinkExt, StreamExt};
 use prost::Message;
@@ -81,9 +80,9 @@ fn unused_loopback_port() -> u16 {
 async fn connect_player(
     address: SocketAddr,
     player_id: i64,
-) -> io::Result<Framed<TcpStream, FrameCodec>> {
+) -> io::Result<Framed<TcpStream, Elr2Codec>> {
     let stream = connect_when_ready(address).await?;
-    let mut framed = Framed::new(stream, FrameCodec::default());
+    let mut framed = Framed::new(stream, Elr2Codec::default());
     let tickets = TicketService::new(
         DEMO_TICKET_KEY,
         "game-login",
@@ -101,13 +100,12 @@ async fn connect_player(
             generation: 1,
         })
         .map_err(io::Error::other)?;
-    let payload = serde_json::to_vec(&serde_json::json!({ "ticket": ticket }))?;
     let response = exchange(
         &mut framed,
-        Frame::request(ROUTE_AUTHENTICATE, 1, payload).map_err(io::Error::other)?,
+        EluraProtocol::authenticate(1, ticket).map_err(io::Error::other)?,
     )
     .await?;
-    assert_eq!(response.kind, FrameKind::Response);
+    EluraProtocol::decode_authenticate(&response).map_err(io::Error::other)?;
     Ok(framed)
 }
 
@@ -124,7 +122,7 @@ async fn connect_when_ready(address: SocketAddr) -> io::Result<TcpStream> {
 }
 
 async fn move_player(
-    framed: &mut Framed<TcpStream, FrameCodec>,
+    framed: &mut Framed<TcpStream, Elr2Codec>,
     request_id: u64,
     dx: i32,
     dy: i32,
@@ -132,14 +130,17 @@ async fn move_player(
     let payload = MoveRequest { dx, dy }.encode_to_vec();
     let response = exchange(
         framed,
-        Frame::request(ROUTE_MOVE, request_id, Bytes::from(payload)).map_err(io::Error::other)?,
+        Elr2Frame::request(ROUTE_MOVE, request_id, payload).map_err(io::Error::other)?,
     )
     .await?;
     assert_eq!(response.kind, FrameKind::Response);
     Snapshot::decode(response.payload).map_err(io::Error::other)
 }
 
-async fn exchange(framed: &mut Framed<TcpStream, FrameCodec>, request: Frame) -> io::Result<Frame> {
+async fn exchange(
+    framed: &mut Framed<TcpStream, Elr2Codec>,
+    request: Elr2Frame,
+) -> io::Result<Elr2Frame> {
     framed.send(request).await?;
     timeout(Duration::from_secs(2), framed.next())
         .await

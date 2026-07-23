@@ -7,11 +7,11 @@ using System.Xml;
 
 namespace Elura.Protocol
 {
-    public static class GatewayRoutes
+    public static class EluraRoutes
     {
         public const uint Authenticate = 1;
         public const uint Heartbeat = 2;
-        public const uint Reconnect = 3;
+        public const uint RenewReconnectTicket = 3;
         public const uint SessionControl = 4;
         public const uint FirstApplication = 100;
     }
@@ -96,14 +96,14 @@ namespace Elura.Protocol
     }
 
     [DataContract]
-    public sealed class ReconnectTicketRequest
+    public sealed class ReconnectTicketRenewalRequest
     {
-        public ReconnectTicketRequest()
+        public ReconnectTicketRenewalRequest()
         {
             Ticket = string.Empty;
         }
 
-        public ReconnectTicketRequest(string ticket)
+        public ReconnectTicketRenewalRequest(string ticket)
         {
             Ticket = ticket ?? throw new ArgumentNullException(nameof(ticket));
         }
@@ -167,31 +167,74 @@ namespace Elura.Protocol
         public ulong? RetryAfterMs { get; set; }
     }
 
-    public static class GatewayFrames
+    public static class EluraProtocol
     {
         public static Elr2Frame Authenticate(ulong requestId, string ticket)
         {
             return Elr2Frame.Request(
-                GatewayRoutes.Authenticate,
+                EluraRoutes.Authenticate,
                 requestId,
-                GatewayPayloadCodec.EncodeAuthenticateRequest(ticket));
+                EluraPayloadCodec.EncodeAuthenticateRequest(ticket));
         }
 
-        public static Elr2Frame Reconnect(ulong requestId, string ticket)
+        public static Elr2Frame RenewReconnectTicket(ulong requestId, string ticket)
         {
             return Elr2Frame.Request(
-                GatewayRoutes.Reconnect,
+                EluraRoutes.RenewReconnectTicket,
                 requestId,
-                GatewayPayloadCodec.EncodeReconnectRequest(ticket));
+                EluraPayloadCodec.EncodeReconnectTicketRenewalRequest(ticket));
         }
 
         public static Elr2Frame HeartbeatResponse(Elr2Frame request)
         {
-            return GatewayFrameRules.HeartbeatResponse(request);
+            return EluraFrameRules.HeartbeatResponse(request);
+        }
+
+        public static AuthenticateResponse DecodeAuthenticate(Elr2Frame frame)
+        {
+            RequireResponse(frame, EluraRoutes.Authenticate, "authentication");
+            return EluraPayloadCodec.DecodeAuthenticateResponse(frame.Payload);
+        }
+
+        public static ReconnectTicketResponse DecodeReconnectTicket(Elr2Frame frame)
+        {
+            RequireResponse(
+                frame,
+                EluraRoutes.RenewReconnectTicket,
+                "reconnect ticket renewal");
+            return EluraPayloadCodec.DecodeReconnectTicketResponse(frame.Payload);
+        }
+
+        public static ErrorEnvelope DecodeError(Elr2Frame frame)
+        {
+            if (frame == null)
+                throw new ArgumentNullException(nameof(frame));
+            if (frame.Kind != FrameKind.Error)
+                throw new Elr2ProtocolException("expected an error frame");
+            return EluraPayloadCodec.DecodeError(frame.Payload);
+        }
+
+        public static void ValidateClientFrame(
+            Elr2Frame frame,
+            bool authenticated,
+            ulong? pendingHeartbeat = null)
+        {
+            EluraFrameRules.ValidateClientFrame(frame, authenticated, pendingHeartbeat);
+        }
+
+        private static void RequireResponse(Elr2Frame frame, uint route, string description)
+        {
+            if (frame == null)
+                throw new ArgumentNullException(nameof(frame));
+            if (frame.Kind != FrameKind.Response || frame.Route != route)
+            {
+                throw new Elr2ProtocolException(
+                    "expected a " + description + " response frame");
+            }
         }
     }
 
-    public static class GatewayPayloadCodec
+    internal static class EluraPayloadCodec
     {
         public static byte[] EncodeAuthenticateRequest(string ticket)
         {
@@ -204,12 +247,13 @@ namespace Elura.Protocol
         }
 
         // Renewal consumes the current reconnect ticket before returning its replacement.
-        public static byte[] EncodeReconnectRequest(string ticket)
+        public static byte[] EncodeReconnectTicketRenewalRequest(string ticket)
         {
-            return Serialize(new ReconnectTicketRequest(ticket));
+            return Serialize(new ReconnectTicketRenewalRequest(ticket));
         }
 
-        public static ReconnectTicketResponse DecodeReconnectResponse(ReadOnlySpan<byte> payload)
+        public static ReconnectTicketResponse DecodeReconnectTicketResponse(
+            ReadOnlySpan<byte> payload)
         {
             return ValidateReconnectTicket(Deserialize<ReconnectTicketResponse>(payload));
         }
@@ -242,7 +286,7 @@ namespace Elura.Protocol
             }
             catch (SerializationException error)
             {
-                throw new Elr2ProtocolException("invalid Gateway JSON payload", error);
+                throw new Elr2ProtocolException("invalid Elura protocol JSON payload", error);
             }
         }
 
@@ -256,17 +300,17 @@ namespace Elura.Protocol
                     var serializer = new DataContractJsonSerializer(typeof(T));
                     var result = serializer.ReadObject(input) as T;
                     if (result == null)
-                        throw new Elr2ProtocolException("invalid Gateway JSON payload");
+                        throw new Elr2ProtocolException("invalid Elura protocol JSON payload");
                     return result;
                 }
             }
             catch (SerializationException error)
             {
-                throw new Elr2ProtocolException("invalid Gateway JSON payload", error);
+                throw new Elr2ProtocolException("invalid Elura protocol JSON payload", error);
             }
             catch (XmlException error)
             {
-                throw new Elr2ProtocolException("invalid Gateway JSON payload", error);
+                throw new Elr2ProtocolException("invalid Elura protocol JSON payload", error);
             }
         }
 
@@ -312,7 +356,7 @@ namespace Elura.Protocol
         }
     }
 
-    public static class GatewayFrameRules
+    internal static class EluraFrameRules
     {
         public static void ValidateClientFrame(
             Elr2Frame frame,
@@ -320,7 +364,7 @@ namespace Elura.Protocol
             ulong? pendingHeartbeat = null)
         {
             Elr2Codec.Validate(frame);
-            if (frame.Kind == FrameKind.Response && frame.Route == GatewayRoutes.Heartbeat)
+            if (frame.Kind == FrameKind.Response && frame.Route == EluraRoutes.Heartbeat)
             {
                 if (!pendingHeartbeat.HasValue ||
                     frame.RequestId != pendingHeartbeat.Value ||
@@ -336,16 +380,16 @@ namespace Elura.Protocol
             if (frame.Kind != FrameKind.Request)
             {
                 throw new Elr2ProtocolException(
-                    "Gateway accepts request frames and heartbeat responses only");
+                    "the Elura endpoint accepts request frames and heartbeat responses only");
             }
-            if (frame.Route < GatewayRoutes.FirstApplication && frame.Sequence != 0)
+            if (frame.Route < EluraRoutes.FirstApplication && frame.Sequence != 0)
                 throw new Elr2ProtocolException("framework requests must have sequence zero");
 
             var allowed = authenticated
-                ? frame.Route == GatewayRoutes.Heartbeat ||
-                  frame.Route == GatewayRoutes.Reconnect ||
-                  frame.Route >= GatewayRoutes.FirstApplication
-                : frame.Route == GatewayRoutes.Authenticate;
+                ? frame.Route == EluraRoutes.Heartbeat ||
+                  frame.Route == EluraRoutes.RenewReconnectTicket ||
+                  frame.Route >= EluraRoutes.FirstApplication
+                : frame.Route == EluraRoutes.Authenticate;
             if (!allowed)
                 throw new Elr2ProtocolException("route is not allowed in the current session state");
         }
@@ -355,7 +399,7 @@ namespace Elura.Protocol
             if (request == null)
                 throw new ArgumentNullException(nameof(request));
             if (request.Kind != FrameKind.Request ||
-                request.Route != GatewayRoutes.Heartbeat ||
+                request.Route != EluraRoutes.Heartbeat ||
                 request.Sequence != 0 ||
                 request.Payload.Length != 0)
             {

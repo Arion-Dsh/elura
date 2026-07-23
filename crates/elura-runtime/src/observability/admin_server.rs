@@ -176,8 +176,8 @@ impl AdminServer {
             diagnostics: self.diagnostics.clone(),
         };
         let app = Router::new()
-            .route("/elura/healthz", get(health))
-            .route("/elura/readyz", get(readiness))
+            .route("/healthz", get(health))
+            .route("/readyz", get(readiness))
             .route("/elura/version", get(version))
             .route("/elura/metrics", get(metrics))
             .route("/elura/debug/stats", get(stats))

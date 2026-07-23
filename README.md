@@ -21,15 +21,82 @@ or run together as a monolith.
 
 - TCP, UDP, WebSocket, WebTransport, and QUIC transports.
 - Distributed Gateway and World deployment, or a single-process monolith.
+- One-login HTTP access/refresh tokens with one-time ELR2 Session-ticket exchange.
 - Rooms, fixed-step simulation, AOI, replication, prediction, and lag compensation.
 - Optional Redis, SQL, Kubernetes, identity, notification, OTP, and payment integrations.
+
+## HTTP APIs alongside realtime connections
+
+HTTP business APIs and ELR2 connections use separate credentials derived from
+one application login:
+
+```text
+POST /elura/auth/login
+  -> reusable HTTP access token
+  -> rotating refresh token
+  -> optional one-time Gateway login ticket
+
+HTTP business request
+  -> Authorization: Bearer <access token>
+
+ELR2 connection
+  -> AUTHENTICATE(<Gateway login or reconnect ticket>)
+```
+
+[`HttpAuthApi`](https://docs.rs/elura/latest/elura/gateway/http_auth/struct.HttpAuthApi.html)
+provides `/elura/auth/login`, `/elura/auth/refresh`, and `/elura/game/session-ticket`. With both the
+`gateway` and `identity` features enabled, `IdentityHttpBackend` connects the built-in
+`IdentityService` and its password, phone, OAuth2, WeChat, Douyin, and QuickSDK providers directly
+to this API. Applications implement only `IdentityHttpPolicy` to grant scopes and verify that a
+selected player belongs to the authenticated account. Custom identity systems can still implement
+`HttpLoginBackend` directly. `HttpBearerAuth` protects application-owned Axum routes such as
+payments, while the existing TCP, WebSocket, QUIC, and WebTransport Session flow remains
+unchanged.
+
+```rust,ignore
+let login_backend = Arc::new(IdentityHttpBackend::new(
+    identity_service,
+    Arc::new(GameIdentityPolicy::new(account_store)),
+));
+let auth_api = HttpAuthApi::new(http_tokens, tickets, shared_replay, login_backend);
+```
+
+The adapter performs existing-account login once. Registration and linking remain explicit
+application flows, which prevents one-time third-party authorization codes from being consumed
+twice by a fallback login-then-register sequence.
+
+Refresh rotation uses the same `ReplayStore` contract as Gateway tickets. Inject a shared Redis
+implementation before running multiple HTTP or Gateway instances.
+
+Mount the authentication API and protected business routes next to an existing realtime
+transport:
+
+```rust,ignore
+let payments = Router::new()
+    .route("/elura/payments/orders", post(create_order))
+    .route_layer(middleware::from_fn_with_state(
+        auth_api.bearer_auth(),
+        require_bearer,
+    ));
+
+Gateway::new(gateway_config)
+    .replay_store(shared_replay.clone())
+    .transport(TcpTransport::new(tcp_config)?)
+    .http("0.0.0.0:8080", auth_api.router().merge(payments))
+    .run(admin_config)
+    .await?;
+```
+
+The HTTP listener and ELR2 listener are supervised together, but their authentication semantics
+remain independent. Payment handlers receive `AuthenticatedHttp`; realtime handlers continue to
+receive the server-owned ELR2 `Session` identity.
 
 ## Quick start
 
 Install the CLI and scaffold an application:
 
 ```bash
-cargo install elura-cli --version 0.2.7
+cargo install elura-cli --version 0.2.8
 elura skill install
 elura init all --dir .
 ```
@@ -38,7 +105,7 @@ Or add the framework directly:
 
 ```toml
 [dependencies]
-elura = "0.2.7"
+elura = "0.2.8"
 ```
 
 The skill is installed in `.agents/skills/elura-app-development` for project-level coding agents.

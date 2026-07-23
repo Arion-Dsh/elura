@@ -14,8 +14,9 @@ pub use elura_core::{Error, Result};
 #[cfg(feature = "core")]
 pub mod core {
     pub use elura_core::{
-        account_version, gateway_world, identity, online, otp, outbox, ownership, protocol, push,
-        rate_limit, realm_gateway, realtime, replay, replication, session, state_hash, ticket,
+        account_version, gateway_world, http_auth, identity, online, otp, outbox, ownership,
+        protocol, push, rate_limit, realm_gateway, realtime, replay, replication, session,
+        state_hash, ticket,
     };
 }
 
@@ -29,6 +30,10 @@ pub mod prelude {
     #[cfg(feature = "core")]
     pub use elura_core::account_version::{
         AccountVersionKey, AccountVersionStore, MutableAccountVersionStore,
+    };
+    #[cfg(feature = "core")]
+    pub use elura_core::http_auth::{
+        HttpTokenClaims, HttpTokenPair, HttpTokenPurpose, HttpTokenService,
     };
     #[cfg(feature = "core")]
     pub use elura_core::online::{
@@ -55,6 +60,14 @@ pub mod prelude {
     #[cfg(feature = "core")]
     pub use crate::discovery::{
         GatewayWorldRoutingConfig, WorldDiscovery, WorldRegistrar, WorldRegistration,
+    };
+    #[cfg(all(feature = "gateway", feature = "identity"))]
+    pub use crate::gateway::http_auth::identity::{IdentityHttpBackend, IdentityHttpPolicy};
+    #[cfg(feature = "gateway")]
+    pub use crate::gateway::http_auth::{
+        AuthenticatedHttp, GAME_CONNECT_SCOPE, GameSessionTicketRequest, GatewaySessionTicket,
+        HttpAuthApi, HttpAuthErrorResponse, HttpAuthRejection, HttpBearerAuth, HttpLoginBackend,
+        HttpLoginGrant, HttpLoginRequest, HttpLoginResponse, HttpRefreshRequest, require_bearer,
     };
     #[cfg(feature = "gateway")]
     pub use crate::gateway::observability::{AdmissionAdmin, GatewayAdmin};

@@ -8,10 +8,10 @@ import {
   validateFrame,
 } from "./elr2.js";
 
-export const GatewayRoutes = {
+export const EluraRoutes = {
   authenticate: 1,
   heartbeat: 2,
-  reconnect: 3,
+  renewReconnectTicket: 3,
   sessionControl: 4,
   firstApplication: 100,
 } as const;
@@ -25,7 +25,7 @@ export interface Identity {
 }
 
 export interface AuthenticateRequest { ticket: string }
-export interface ReconnectTicketRequest { ticket: string }
+export interface ReconnectTicketRenewalRequest { ticket: string }
 export interface ReconnectTicketResponse { ticket: string; expiresInSeconds: number }
 export interface AuthenticateResponse {
   sessionId: string;
@@ -98,14 +98,14 @@ export function decodeAuthenticateResponse(payload: Uint8Array): AuthenticateRes
 }
 
 // Renewal consumes the current reconnect ticket before returning its replacement.
-export function encodeReconnectRequest(ticket: string): Uint8Array {
+export function encodeReconnectTicketRenewalRequest(ticket: string): Uint8Array {
   return utf8.encode(JSON.stringify({
     ticket: stringField(ticket, "ticket"),
-  } satisfies ReconnectTicketRequest));
+  } satisfies ReconnectTicketRenewalRequest));
 }
 
-export function decodeReconnectResponse(payload: Uint8Array): ReconnectTicketResponse {
-  return reconnectTicket(parseJson(payload, "reconnect response"));
+export function decodeReconnectTicketResponse(payload: Uint8Array): ReconnectTicketResponse {
+  return reconnectTicket(parseJson(payload, "reconnect ticket renewal response"));
 }
 
 function reconnectTicket(value: unknown): ReconnectTicketResponse {
@@ -147,7 +147,7 @@ export function validateClientFrame(
   pendingHeartbeat?: bigint,
 ): void {
   validateFrame(frame);
-  if (frame.kind === FrameKind.Response && frame.route === GatewayRoutes.heartbeat) {
+  if (frame.kind === FrameKind.Response && frame.route === EluraRoutes.heartbeat) {
     if (pendingHeartbeat === undefined || frame.requestId !== pendingHeartbeat ||
         frame.sequence !== 0 || frame.payload.byteLength !== 0) {
       throw new Elr2ProtocolError("heartbeat response does not match an outstanding request");
@@ -155,20 +155,23 @@ export function validateClientFrame(
     return;
   }
   if (frame.kind !== FrameKind.Request) {
-    throw new Elr2ProtocolError("Gateway accepts request frames and heartbeat responses only");
+    throw new Elr2ProtocolError(
+      "the Elura endpoint accepts request frames and heartbeat responses only",
+    );
   }
-  if (frame.route < GatewayRoutes.firstApplication && frame.sequence !== 0) {
+  if (frame.route < EluraRoutes.firstApplication && frame.sequence !== 0) {
     throw new Elr2ProtocolError("framework requests must have sequence zero");
   }
   const allowed = authenticated
-    ? frame.route === GatewayRoutes.heartbeat || frame.route === GatewayRoutes.reconnect ||
-      frame.route >= GatewayRoutes.firstApplication
-    : frame.route === GatewayRoutes.authenticate;
+    ? frame.route === EluraRoutes.heartbeat ||
+      frame.route === EluraRoutes.renewReconnectTicket ||
+      frame.route >= EluraRoutes.firstApplication
+    : frame.route === EluraRoutes.authenticate;
   if (!allowed) throw new Elr2ProtocolError("route is not allowed in the current session state");
 }
 
 export function heartbeatResponse(request: Elr2Frame): Elr2Frame {
-  if (request.kind !== FrameKind.Request || request.route !== GatewayRoutes.heartbeat ||
+  if (request.kind !== FrameKind.Request || request.route !== EluraRoutes.heartbeat ||
       request.sequence !== 0 || request.payload.byteLength !== 0) {
     throw new Elr2ProtocolError("invalid heartbeat request");
   }
@@ -176,21 +179,25 @@ export function heartbeatResponse(request: Elr2Frame): Elr2Frame {
 }
 
 export function authenticateFrame(id: RequestId, ticket: string): Elr2Frame {
-  return requestFrame(GatewayRoutes.authenticate, id, encodeAuthenticateRequest(ticket));
+  return requestFrame(EluraRoutes.authenticate, id, encodeAuthenticateRequest(ticket));
 }
 
-export function reconnectFrame(id: RequestId, ticket: string): Elr2Frame {
-  return requestFrame(GatewayRoutes.reconnect, id, encodeReconnectRequest(ticket));
+export function renewReconnectTicketFrame(id: RequestId, ticket: string): Elr2Frame {
+  return requestFrame(
+    EluraRoutes.renewReconnectTicket,
+    id,
+    encodeReconnectTicketRenewalRequest(ticket),
+  );
 }
 
 export function decodeAuthenticateFrame(frame: Elr2Frame): AuthenticateResponse {
-  requireResponse(frame, GatewayRoutes.authenticate, "authentication");
+  requireResponse(frame, EluraRoutes.authenticate, "authentication");
   return decodeAuthenticateResponse(frame.payload);
 }
 
-export function decodeReconnectFrame(frame: Elr2Frame): ReconnectTicketResponse {
-  requireResponse(frame, GatewayRoutes.reconnect, "reconnect");
-  return decodeReconnectResponse(frame.payload);
+export function decodeReconnectTicketFrame(frame: Elr2Frame): ReconnectTicketResponse {
+  requireResponse(frame, EluraRoutes.renewReconnectTicket, "reconnect ticket renewal");
+  return decodeReconnectTicketResponse(frame.payload);
 }
 
 export function decodeErrorFrame(frame: Elr2Frame): ErrorEnvelope {
@@ -206,14 +213,15 @@ function requireResponse(frame: Elr2Frame, route: number, description: string): 
   }
 }
 
-export const Gateway = {
-  routes: GatewayRoutes,
+export const EluraProtocol = {
+  routes: EluraRoutes,
   authenticate: authenticateFrame,
-  reconnect: reconnectFrame,
+  renewReconnectTicket: renewReconnectTicketFrame,
   heartbeatResponse,
   decodeAuthenticate: decodeAuthenticateFrame,
-  decodeReconnect: decodeReconnectFrame,
+  decodeReconnectTicket: decodeReconnectTicketFrame,
   decodeError: decodeErrorFrame,
+  validateClientFrame,
 } as const;
 
 export enum SessionControlAction {

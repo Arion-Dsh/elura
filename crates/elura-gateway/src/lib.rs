@@ -56,6 +56,7 @@ use elura_runtime::security::{BoxedServiceStream, ClientTlsConfig, InternalToken
 use observability::{AdminServer, AdmissionAdmin, GatewayAdmin, Readiness};
 mod builder;
 mod gateway;
+pub mod http_auth;
 mod interceptor;
 pub mod observability;
 pub mod protection;
@@ -960,7 +961,7 @@ impl GatewayServer {
         Ok(self)
     }
 
-    /// Adds a required dependency to `/elura/readyz` evaluation.
+    /// Adds a required dependency to `/readyz` evaluation.
     pub fn with_readiness_probe(
         mut self,
         name: impl Into<Arc<str>>,

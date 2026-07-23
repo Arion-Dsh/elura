@@ -4,9 +4,8 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
-use bytes::Bytes;
-use elura::core::protocol::{Frame, FrameCodec, FrameKind, ROUTE_AUTHENTICATE};
 use elura::prelude::{Identity, TicketService};
+use elura_protocol::{Elr2Codec, Elr2Frame, EluraProtocol, FrameKind};
 use elura_spot_demo::{
     ARENA_HEIGHT, ARENA_WIDTH, DEMO_TICKET_KEY, MOVE_STEP, MoveRequest, PLAYER_SIZE, ROUTE_MOVE,
     SERVER_ADDRESS, Snapshot,
@@ -308,12 +307,12 @@ async fn network_loop(
 async fn connect_and_authenticate(
     player_id: i64,
     address: &str,
-) -> io::Result<Framed<TcpStream, FrameCodec>> {
+) -> io::Result<Framed<TcpStream, Elr2Codec>> {
     let stream = timeout(Duration::from_secs(2), TcpStream::connect(address))
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "connect timeout"))??;
     stream.set_nodelay(true)?;
-    let mut connection = Framed::new(stream, FrameCodec::default());
+    let mut connection = Framed::new(stream, Elr2Codec::default());
 
     let tickets = TicketService::new(
         DEMO_TICKET_KEY,
@@ -332,18 +331,17 @@ async fn connect_and_authenticate(
             generation: 1,
         })
         .map_err(io::Error::other)?;
-    let payload = serde_json::to_vec(&serde_json::json!({ "ticket": ticket }))?;
     let response = exchange(
         &mut connection,
-        Frame::request(ROUTE_AUTHENTICATE, 1, payload).map_err(io::Error::other)?,
+        EluraProtocol::authenticate(1, ticket).map_err(io::Error::other)?,
     )
     .await?;
-    expect_response(&response, 1)?;
+    EluraProtocol::decode_authenticate(&response).map_err(io::Error::other)?;
     Ok(connection)
 }
 
 async fn send_move(
-    connection: &mut Framed<TcpStream, FrameCodec>,
+    connection: &mut Framed<TcpStream, Elr2Codec>,
     request_id: u64,
     input: (i32, i32),
 ) -> io::Result<Snapshot> {
@@ -353,7 +351,7 @@ async fn send_move(
     };
     let response = exchange(
         connection,
-        Frame::request(ROUTE_MOVE, request_id, Bytes::from(request.encode_to_vec()))
+        Elr2Frame::request(ROUTE_MOVE, request_id, request.encode_to_vec())
             .map_err(io::Error::other)?,
     )
     .await?;
@@ -362,9 +360,9 @@ async fn send_move(
 }
 
 async fn exchange(
-    connection: &mut Framed<TcpStream, FrameCodec>,
-    request: Frame,
-) -> io::Result<Frame> {
+    connection: &mut Framed<TcpStream, Elr2Codec>,
+    request: Elr2Frame,
+) -> io::Result<Elr2Frame> {
     timeout(Duration::from_secs(2), connection.send(request))
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "send timeout"))??;
@@ -374,7 +372,7 @@ async fn exchange(
         .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "server closed"))?
 }
 
-fn expect_response(response: &Frame, request_id: u64) -> io::Result<()> {
+fn expect_response(response: &Elr2Frame, request_id: u64) -> io::Result<()> {
     if response.request_id != request_id {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,

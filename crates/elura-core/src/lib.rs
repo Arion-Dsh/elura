@@ -5,6 +5,7 @@
 pub mod account_version;
 pub mod error;
 pub mod gateway_world;
+pub mod http_auth;
 pub mod identity;
 pub mod online;
 pub mod otp;

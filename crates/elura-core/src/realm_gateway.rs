@@ -133,19 +133,19 @@ mod tests {
             transport: GatewayEndpointTransport::Wss,
             host: "r1.game.example".into(),
             port: 443,
-            path: "/elr2".into(),
+            path: "/elura/game".into(),
         }
     }
 
     #[test]
     fn resolves_serialized_endpoint() {
         let endpoint: RealmGatewayEndpoint = serde_json::from_str(
-            r#"{"region_id":1,"realm_id":2,"transport":"wss","host":"r1.game.example","port":443,"path":"/elr2"}"#,
+            r#"{"region_id":1,"realm_id":2,"transport":"wss","host":"r1.game.example","port":443,"path":"/elura/game"}"#,
         )
         .unwrap();
         assert_eq!(
             endpoint.address().unwrap(),
-            "wss://r1.game.example:443/elr2"
+            "wss://r1.game.example:443/elura/game"
         );
 
         let directory = RealmGatewayDirectory::new();

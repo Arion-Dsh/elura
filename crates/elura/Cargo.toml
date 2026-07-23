@@ -32,7 +32,11 @@ sql = ["adapters", "elura-adapters/sql"]
 kubernetes = ["adapters", "gateway", "elura-adapters/kubernetes"]
 admin = ["adapters", "elura-adapters/admin"]
 providers = ["core", "dep:elura-providers"]
-identity = ["providers", "elura-providers/identity"]
+identity = [
+    "providers",
+    "elura-providers/identity",
+    "elura-gateway?/identity-http",
+]
 notification-alisms = ["providers", "elura-providers/notification-alisms"]
 otp = ["providers", "elura-providers/otp"]
 payment-alipay = ["providers", "elura-providers/payment-alipay"]

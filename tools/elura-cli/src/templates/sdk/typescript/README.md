@@ -1,7 +1,7 @@
-# Elura Gateway protocol for TypeScript
+# Elura protocol for TypeScript
 
 `@elura/protocol` is a dependency-free, strict TypeScript implementation of the public
-Gateway-to-client ELR2 v{{ELR2_VERSION}} contract. It works in browsers and Node.js and includes
+Elura client ELR2 v{{ELR2_VERSION}} contract. It works in browsers and Node.js and includes
 frame encoding, TCP stream reassembly, authentication and reconnect payloads, error envelopes,
 heartbeat handling, and Session Control protobuf encoding.
 
@@ -13,9 +13,9 @@ Authentication creates both the JSON payload and frame. Request IDs can be norma
 use `bigint` only when the full unsigned 64-bit range is required.
 
 ```ts
-import { Elr2, Gateway } from "@elura/protocol";
+import { Elr2, EluraProtocol } from "@elura/protocol";
 
-const request = Gateway.authenticate(nextRequestId++, loginTicket);
+const request = EluraProtocol.authenticate(nextRequestId++, loginTicket);
 socket.send(Elr2.encode(request));
 ```
 
@@ -47,19 +47,19 @@ for (let frame; (frame = decoder.next()) !== undefined;) {
 Reply to a server heartbeat with:
 
 ```ts
-socket.send(Elr2.encode(Gateway.heartbeatResponse(heartbeat)));
+socket.send(Elr2.encode(EluraProtocol.heartbeatResponse(heartbeat)));
 ```
 
 Decode a successful authentication response without handling wire-format field names:
 
 ```ts
-const auth = Gateway.decodeAuthenticate(frame);
+const auth = EluraProtocol.decodeAuthenticate(frame);
 console.log(auth.sessionId, auth.identity.userId, auth.reconnect.expiresInSeconds);
 ```
 
 For WebSocket transport, negotiate `{{PROTOCOL_IDENTIFIER}}` as the subprotocol. Retain only the
 latest reconnect ticket, renew it before `expiresInSeconds`, and replace it with the ticket returned
-by the reconnect response.
+by the renewal response.
 
 Build and run the golden-vector tests:
 

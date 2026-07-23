@@ -175,8 +175,8 @@ const SDK_CSHARP: &[Artifact] = &[
         template: include_str!("templates/sdk/csharp/Elura.Protocol/Elr2.cs"),
     },
     Artifact {
-        path: "sdk/csharp/Elura.Protocol/GatewayContracts.cs",
-        template: include_str!("templates/sdk/csharp/Elura.Protocol/GatewayContracts.cs"),
+        path: "sdk/csharp/Elura.Protocol/EluraProtocol.cs",
+        template: include_str!("templates/sdk/csharp/Elura.Protocol/EluraProtocol.cs"),
     },
     Artifact {
         path: "sdk/csharp/Elura.Protocol.Tests/Elura.Protocol.Tests.csproj",
@@ -211,8 +211,8 @@ const SDK_TYPESCRIPT: &[Artifact] = &[
         template: include_str!("templates/sdk/typescript/src/elr2.ts"),
     },
     Artifact {
-        path: "sdk/typescript/src/gateway.ts",
-        template: include_str!("templates/sdk/typescript/src/gateway.ts"),
+        path: "sdk/typescript/src/elura.ts",
+        template: include_str!("templates/sdk/typescript/src/elura.ts"),
     },
     Artifact {
         path: "sdk/typescript/src/index.ts",
@@ -224,6 +224,28 @@ const SDK_TYPESCRIPT: &[Artifact] = &[
     },
     Artifact {
         path: "sdk/typescript/proto/session_control.proto",
+        template: include_str!("templates/sdk/session_control.proto"),
+    },
+];
+const SDK_RUST: &[Artifact] = &[
+    Artifact {
+        path: "sdk/rust/Cargo.toml",
+        template: include_str!("templates/sdk/rust/Cargo.toml"),
+    },
+    Artifact {
+        path: "sdk/rust/README.md",
+        template: include_str!("templates/sdk/rust/README.md"),
+    },
+    Artifact {
+        path: "sdk/rust/src/lib.rs",
+        template: include_str!("templates/sdk/rust/src/lib.rs"),
+    },
+    Artifact {
+        path: "sdk/rust/tests/golden.rs",
+        template: include_str!("templates/sdk/rust/tests/golden.rs"),
+    },
+    Artifact {
+        path: "sdk/rust/proto/session_control.proto",
         template: include_str!("templates/sdk/session_control.proto"),
     },
 ];
@@ -441,7 +463,7 @@ fn write_help(stdout: &mut dyn Write, topic: Option<&str>) -> Result<(), RunErro
             "  monolith  Monolith entry point, config, and Compose file\n",
             "  module    Named world module (--name required)\n",
             "  route     Typed route and protobuf definition\n",
-            "  sdk       Gateway-to-client protocol SDKs\n",
+            "  sdk       Elura client protocol SDKs\n",
             "  docker    Docker Compose deployment files\n",
             "  k8s       Kubernetes deployment files (alias: kubernetes)\n",
             "  all       Complete Rust project with config and deployment files\n",
@@ -494,7 +516,9 @@ fn target_help(target: &str) -> String {
             "      --id <ID>        Numeric route ID, at least 100 (required)\n",
         ));
     } else if target == "sdk" {
-        help.push_str("      --language <LANG>  cpp, csharp, typescript, or all [default: all]\n");
+        help.push_str(
+            "      --language <LANG>  rust, cpp, csharp, typescript, or all [default: all]\n",
+        );
     }
     help.push_str(concat!(
         "  -d, --dir <PATH>  Output directory [default: .]\n",
@@ -695,13 +719,17 @@ fn artifacts(profile: &str, options: &Options) -> Result<Vec<GeneratedArtifact>,
             "cpp" | "c++" => "cpp",
             "csharp" | "cs" | "c#" => "csharp",
             "typescript" | "ts" => "typescript",
+            "rust" | "rs" => "rust",
             value => {
                 return Err(usage_error(format!(
-                    "unknown SDK language {value:?}; choose cpp, csharp, typescript, or all"
+                    "unknown SDK language {value:?}; choose rust, cpp, csharp, typescript, or all"
                 )));
             }
         };
         let mut selected = Vec::new();
+        if matches!(language, "all" | "rust") {
+            selected.extend(SDK_RUST);
+        }
         if matches!(language, "all" | "cpp") {
             selected.extend(SDK_CPP);
         }
@@ -1043,7 +1071,7 @@ mod tests {
     }
 
     #[test]
-    fn init_sdk_generates_gateway_client_protocols() {
+    fn init_sdk_generates_elura_client_protocols() {
         let directory = TestDir::new("sdk");
         let dir = directory.0.to_str().unwrap();
         let (code, stdout, stderr) = execute(&["init", "sdk", "--dir", dir]);
@@ -1053,17 +1081,19 @@ mod tests {
             "sdk/cpp/include/elura/elr2.hpp",
             "sdk/cpp/src/elr2.cpp",
             "sdk/csharp/Elura.Protocol/Elr2.cs",
-            "sdk/csharp/Elura.Protocol/GatewayContracts.cs",
+            "sdk/csharp/Elura.Protocol/EluraProtocol.cs",
             "sdk/typescript/src/elr2.ts",
-            "sdk/typescript/src/gateway.ts",
+            "sdk/typescript/src/elura.ts",
+            "sdk/rust/src/lib.rs",
         ] {
             let content = fs::read_to_string(directory.0.join(path)).unwrap();
             assert!(!content.contains("{{"), "unrendered placeholder in {path}");
         }
         for path in [
             "sdk/cpp/include/elura/elr2.hpp",
-            "sdk/csharp/Elura.Protocol/GatewayContracts.cs",
-            "sdk/typescript/src/gateway.ts",
+            "sdk/csharp/Elura.Protocol/EluraProtocol.cs",
+            "sdk/typescript/src/elura.ts",
+            "sdk/rust/src/lib.rs",
         ] {
             assert!(
                 fs::read_to_string(directory.0.join(path))
@@ -1076,7 +1106,7 @@ mod tests {
         assert!(cpp.contains(&format!("kElr2Version = {}", elura_core::protocol::VERSION)));
         assert!(cpp.contains(elura_core::protocol::PROTOCOL_IDENTIFIER));
         assert!(cpp.contains("std::span<const std::uint8_t>"));
-        assert!(cpp.contains("static Frame request"));
+        assert!(cpp.contains("static Elr2Frame request"));
 
         let version = env!("CARGO_PKG_VERSION");
         let cpp_manifest = fs::read_to_string(directory.0.join("sdk/cpp/CMakeLists.txt")).unwrap();
@@ -1092,8 +1122,10 @@ mod tests {
             fs::read_to_string(directory.0.join("sdk/typescript/package.json")).unwrap();
         let typescript =
             fs::read_to_string(directory.0.join("sdk/typescript/src/elr2.ts")).unwrap();
-        let typescript_gateway =
-            fs::read_to_string(directory.0.join("sdk/typescript/src/gateway.ts")).unwrap();
+        let typescript_elura =
+            fs::read_to_string(directory.0.join("sdk/typescript/src/elura.ts")).unwrap();
+        let rust_manifest = fs::read_to_string(directory.0.join("sdk/rust/Cargo.toml")).unwrap();
+        let rust = fs::read_to_string(directory.0.join("sdk/rust/src/lib.rs")).unwrap();
         assert!(cpp_manifest.contains(&format!("VERSION {version}")));
         assert!(cpp_manifest.contains("cxx_std_20"));
         assert!(!cpp_manifest.contains("cxx_std_17"));
@@ -1104,7 +1136,10 @@ mod tests {
         assert!(!csharp.contains("record Elr2Frame"));
         assert!(typescript_manifest.contains(&format!("\"version\": \"{version}\"")));
         assert!(typescript.contains("export const Elr2"));
-        assert!(typescript_gateway.contains("export const Gateway"));
+        assert!(typescript_elura.contains("export const EluraProtocol"));
+        assert!(rust_manifest.contains(&format!("version = \"{version}\"")));
+        assert!(rust.contains("pub struct Elr2Frame"));
+        assert!(rust.contains("pub struct EluraProtocol"));
     }
 
     #[test]
@@ -1117,6 +1152,7 @@ mod tests {
                 "sdk/typescript/README.md",
             ),
             ("ts", "sdk/typescript/package.json", "sdk/cpp/README.md"),
+            ("rs", "sdk/rust/Cargo.toml", "sdk/typescript/README.md"),
         ] {
             let directory = TestDir::new("sdk-language");
             let dir = directory.0.to_str().unwrap();

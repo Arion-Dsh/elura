@@ -1,7 +1,7 @@
-# Elura Gateway protocol for Unity and C#
+# Elura protocol for Unity and C#
 
 `Elura.Protocol` is a dependency-free C# 9 / .NET Standard 2.1 implementation of the public
-Gateway-to-client ELR2 v{{ELR2_VERSION}} contract. It is compatible with Unity 6.3 LTS and its
+Elura client ELR2 v{{ELR2_VERSION}} contract. It is compatible with Unity 6.3 LTS and its
 Mono and IL2CPP scripting backends.
 
 It includes frame encoding, TCP stream reassembly, authentication and reconnect payloads,
@@ -23,7 +23,7 @@ dotnet build Elura.Protocol/Elura.Protocol.csproj -c Release
 Authentication is one line; the SDK creates both the JSON payload and ELR2 frame:
 
 ```csharp
-var request = GatewayFrames.Authenticate(nextRequestId++, loginTicket);
+var request = EluraProtocol.Authenticate(nextRequestId++, loginTicket);
 var bytes = Elr2Codec.Encode(request);
 socket.Send(bytes);
 ```
@@ -55,12 +55,12 @@ while (decoder.TryRead(out var frame))
 Reply to a server heartbeat with:
 
 ```csharp
-socket.Send(Elr2Codec.Encode(GatewayFrames.HeartbeatResponse(heartbeat)));
+socket.Send(Elr2Codec.Encode(EluraProtocol.HeartbeatResponse(heartbeat)));
 ```
 
 For WebSocket transport, negotiate `{{PROTOCOL_IDENTIFIER}}` as the subprotocol. Every successful
 authentication response contains a reconnect ticket. Retain only the latest ticket, renew it
-before `ExpiresInSeconds`, and replace it with the ticket returned by the reconnect response.
+before `ExpiresInSeconds`, and replace it with the ticket returned by the renewal response.
 
 Run the golden-vector executable outside Unity:
 

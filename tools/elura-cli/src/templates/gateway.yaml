@@ -52,21 +52,21 @@ spec:
               containerPort: 17001
           readinessProbe:
             httpGet:
-              path: /elura/readyz
+              path: /readyz
               port: admin
             periodSeconds: 5
             timeoutSeconds: 2
             failureThreshold: 3
           startupProbe:
             httpGet:
-              path: /elura/healthz
+              path: /healthz
               port: admin
             periodSeconds: 5
             timeoutSeconds: 2
             failureThreshold: 12
           livenessProbe:
             httpGet:
-              path: /elura/healthz
+              path: /healthz
               port: admin
           lifecycle:
             preStop:

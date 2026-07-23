@@ -2,7 +2,7 @@ import {
   Elr2,
   Elr2ProtocolError,
   FrameKind,
-  Gateway,
+  EluraProtocol,
   SessionControlAction,
   SessionControlCodec,
 } from "../src/index.js";
@@ -46,8 +46,8 @@ try {
 }
 assert(rejectedWrongVersion, "wire-version mismatch");
 
-const authRequest = Gateway.authenticate(8, "ticket-value");
-assert(authRequest.route === Gateway.routes.authenticate &&
+const authRequest = EluraProtocol.authenticate(8, "ticket-value");
+assert(authRequest.route === EluraProtocol.routes.authenticate &&
   Elr2.text(authRequest.payload) === "{\"ticket\":\"ticket-value\"}",
   "authentication frame");
 const authResponse = Elr2.response(authRequest, JSON.stringify({
@@ -55,17 +55,17 @@ const authResponse = Elr2.response(authRequest, JSON.stringify({
   identity: { account_id: 1, user_id: 2, region_id: 3, realm_id: 4, generation: 5 },
   reconnect: { ticket: "next-ticket", expires_in_seconds: 60 },
 }));
-const authenticated = Gateway.decodeAuthenticate(authResponse);
+const authenticated = EluraProtocol.decodeAuthenticate(authResponse);
 assert(authenticated.sessionId === "session-1" && authenticated.identity.userId === 2 &&
   authenticated.reconnect.expiresInSeconds === 60, "authentication response");
 
-const reconnect = Gateway.reconnect(9, "reconnect-value");
-assert(reconnect.route === Gateway.routes.reconnect &&
+const reconnect = EluraProtocol.renewReconnectTicket(9, "reconnect-value");
+assert(reconnect.route === EluraProtocol.routes.renewReconnectTicket &&
   Elr2.text(reconnect.payload) === "{\"ticket\":\"reconnect-value\"}",
   "reconnect renewal frame");
 
-const heartbeat = Elr2.request(Gateway.routes.heartbeat, 10);
-const heartbeatReply = Gateway.heartbeatResponse(heartbeat);
+const heartbeat = Elr2.request(EluraProtocol.routes.heartbeat, 10);
+const heartbeatReply = EluraProtocol.heartbeatResponse(heartbeat);
 assert(heartbeatReply.kind === FrameKind.Response && heartbeatReply.requestId === 10n,
   "heartbeat response");
 

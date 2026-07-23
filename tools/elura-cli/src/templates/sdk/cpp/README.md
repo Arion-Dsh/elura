@@ -1,6 +1,6 @@
-# Elura Gateway protocol for C++
+# Elura protocol for C++
 
-This dependency-free C++20 library implements the public Gateway-to-client ELR2 v{{ELR2_VERSION}}
+This dependency-free C++20 library implements the public Elura client ELR2 v{{ELR2_VERSION}}
 wire contract. It contains frame encoding, exact-message decoding, TCP stream reassembly,
 reserved routes, JSON payload model types, and Session Control protobuf encoding.
 
@@ -9,15 +9,15 @@ reserved routes, JSON payload model types, and Session Control protobuf encoding
 ```cpp
 #include <elura/elr2.hpp>
 
-auto request = elura::Frame::request(
+auto request = elura::Elr2Frame::request(
     100, request_id, elura::to_bytes(R"({"name":"Ada"})"));
-auto wire_bytes = elura::encode_frame(request);
+auto wire_bytes = elura::Elr2Codec::encode(request);
 
 // A complete WebSocket message.
-auto response = elura::decode_frame(received_bytes);
+auto response = elura::Elr2Codec::decode(received_bytes);
 
 // A TCP or QUIC stream. std::vector, std::array, and std::span work directly.
-elura::StreamDecoder decoder;
+elura::Elr2StreamDecoder decoder;
 decoder.append(received_chunk);
 while (auto frame = decoder.next()) {
   handle(*frame);
@@ -48,5 +48,6 @@ Transport integration is intentionally outside this package:
 - `proto/session_control.proto` is included for projects that prefer generated protobuf types.
 
 Every successful authentication response contains a reconnect ticket. Retain only the latest
-ticket, renew it before `expires_in_seconds` through the reconnect route, and replace it with the
-ticket returned by that response. The renewal request consumes the previous ticket.
+ticket, renew it before `expires_in_seconds` through
+`EluraRoutes::RenewReconnectTicket`, and replace it with the ticket returned by that response.
+The renewal request consumes the previous ticket.

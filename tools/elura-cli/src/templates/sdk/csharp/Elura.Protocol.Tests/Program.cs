@@ -47,24 +47,26 @@ namespace Elura.Protocol.Tests
             wrongVersion[5] = 3;
             AssertThrows(() => Elr2Codec.Decode(wrongVersion), "wire-version mismatch");
 
-            var authFrame = GatewayFrames.Authenticate(8, "ticket-value");
+            var authFrame = EluraProtocol.Authenticate(8, "ticket-value");
             Assert(
-                authFrame.Route == GatewayRoutes.Authenticate &&
+                authFrame.Route == EluraRoutes.Authenticate &&
                 Encoding.UTF8.GetString(authFrame.Payload) == "{\"ticket\":\"ticket-value\"}",
                 "authentication frame");
-            var reconnectFrame = GatewayFrames.Reconnect(9, "reconnect-value");
+            var reconnectFrame = EluraProtocol.RenewReconnectTicket(9, "reconnect-value");
             Assert(
-                reconnectFrame.Route == GatewayRoutes.Reconnect &&
+                reconnectFrame.Route == EluraRoutes.RenewReconnectTicket &&
                 Encoding.UTF8.GetString(reconnectFrame.Payload) ==
                     "{\"ticket\":\"reconnect-value\"}",
                 "reconnect renewal frame");
 
-            var authResponse = GatewayPayloadCodec.DecodeAuthenticateResponse(
+            var authResponseFrame = Elr2Frame.Response(
+                authFrame,
                 Elr2.Utf8(
                     "{\"session_id\":\"session-1\",\"identity\":{" +
                     "\"account_id\":1,\"user_id\":2,\"region_id\":3," +
                     "\"realm_id\":4,\"generation\":5},\"reconnect\":{" +
                     "\"ticket\":\"next-ticket\",\"expires_in_seconds\":60}}"));
+            var authResponse = EluraProtocol.DecodeAuthenticate(authResponseFrame);
             Assert(
                 authResponse.Identity.UserId == 2 &&
                 authResponse.Reconnect.ExpiresInSeconds == 60,

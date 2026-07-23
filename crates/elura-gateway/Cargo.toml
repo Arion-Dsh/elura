@@ -12,11 +12,16 @@ documentation = "https://docs.rs/elura-gateway"
 [package.metadata.docs.rs]
 all-features = true
 
+[features]
+default = []
+identity-http = ["dep:elura-providers", "elura-providers/identity"]
+
 [dependencies]
 async-trait.workspace = true
 axum.workspace = true
 bytes.workspace = true
 elura-core.workspace = true
+elura-providers = { workspace = true, optional = true, default-features = false }
 elura-runtime.workspace = true
 futures-util.workspace = true
 ipnet.workspace = true
@@ -35,4 +40,5 @@ wtransport.workspace = true
 
 [dev-dependencies]
 tokio-tungstenite.workspace = true
+tower.workspace = true
 wtransport = { workspace = true, features = ["dangerous-configuration"] }

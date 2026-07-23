@@ -3,35 +3,35 @@
 #include <cassert>
 
 int main() {
-  const auto request = elura::Frame::request(100, 7, elura::to_bytes("hello"), 11);
+  const auto request = elura::Elr2Frame::request(100, 7, elura::to_bytes("hello"), 11);
   const elura::Bytes expected = {
       0x45, 0x4c, 0x52, 0x32, 0x00, 0x02, 0x01, 0x00, 0x00, 0x00, 0x00,
       0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00,
       0x00, 0x0b, 0x00, 0x00, 0x00, 0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f};
-  const auto encoded = elura::encode_frame(request);
+  const auto encoded = elura::Elr2Codec::encode(request);
   assert(encoded == expected);
-  assert(elura::decode_frame(encoded) == request);
+  assert(elura::Elr2Codec::decode(encoded) == request);
   assert(elura::as_string(request.payload) == "hello");
 
-  elura::StreamDecoder stream;
+  elura::Elr2StreamDecoder stream;
   stream.append(std::span{encoded}.first(10));
   assert(!stream.next());
   stream.append(std::span{encoded}.subspan(10));
   const auto streamed = stream.next();
   assert(streamed == request && stream.empty());
 
-  const auto response = elura::Frame::response(request, elura::to_bytes("ok"));
+  const auto response = elura::Elr2Frame::response(request, elura::to_bytes("ok"));
   assert(response.kind == elura::FrameKind::Response);
   assert(response.route == request.route && response.request_id == request.request_id);
-  const auto push = elura::Frame::push(101, elura::to_bytes("news"));
+  const auto push = elura::Elr2Frame::push(101, elura::to_bytes("news"));
   assert(push.kind == elura::FrameKind::Push && push.request_id == 0);
 
   auto wrong_version = encoded;
   wrong_version[5] = 3;
   bool rejected_wrong_version = false;
   try {
-    (void)elura::decode_frame(wrong_version);
-  } catch (const elura::ProtocolError&) {
+    (void)elura::Elr2Codec::decode(wrong_version);
+  } catch (const elura::Elr2ProtocolError&) {
     rejected_wrong_version = true;
   }
   assert(rejected_wrong_version);
