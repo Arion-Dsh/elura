@@ -42,7 +42,7 @@ dependencies = [
 
 [[package]]
 name = "elura-realtime-gameplay-example"
-version = "0.1.0"
+version = "0.2.7"
 dependencies = [
  "elura",
 ]
