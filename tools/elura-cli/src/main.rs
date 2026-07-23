@@ -1086,12 +1086,18 @@ mod tests {
                 .join("sdk/csharp/Elura.Protocol/Elura.Protocol.csproj"),
         )
         .unwrap();
+        let csharp =
+            fs::read_to_string(directory.0.join("sdk/csharp/Elura.Protocol/Elr2.cs")).unwrap();
         let typescript_manifest =
             fs::read_to_string(directory.0.join("sdk/typescript/package.json")).unwrap();
         assert!(cpp_manifest.contains(&format!("VERSION {version}")));
         assert!(cpp_manifest.contains("cxx_std_20"));
         assert!(!cpp_manifest.contains("cxx_std_17"));
         assert!(csharp_manifest.contains(&format!("<Version>{version}</Version>")));
+        assert!(csharp_manifest.contains("<TargetFramework>netstandard2.1</TargetFramework>"));
+        assert!(csharp_manifest.contains("<LangVersion>9.0</LangVersion>"));
+        assert!(csharp.contains("static Elr2Frame Request"));
+        assert!(!csharp.contains("record Elr2Frame"));
         assert!(typescript_manifest.contains(&format!("\"version\": \"{version}\"")));
     }
 
