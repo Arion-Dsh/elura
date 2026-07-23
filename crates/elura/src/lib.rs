@@ -86,10 +86,10 @@ pub mod prelude {
     pub use crate::transport::{
         AccountVersionSettings, AdmissionController, AdmissionDecision, AdmissionRejection,
         AdmissionRequest, AdmissionSettings, AdmissionStage, GatewayTransport,
-        GatewayTransportListener, ProxyProtocolConfig, QuicConfig, RealmAdmission, SessionEvent,
-        SessionEventKind, SessionObserver, TcpConfig, TcpProxyProtocolConfig, TcpTransport,
-        TransportSocketKind, TrustedProxies, UdpConfig, WebSocketConfig, WebTransportConfig,
-        WebTransportMode,
+        GatewayTransportListener, ProxyProtocolConfig, QuicConfig, QuicMode, RealmAdmission,
+        SessionEvent, SessionEventKind, SessionObserver, TcpConfig, TcpProxyProtocolConfig,
+        TcpTransport, TransportSocketKind, TrustedProxies, UdpConfig, WebSocketConfig,
+        WebTransportConfig, WebTransportMode,
     };
     #[cfg(feature = "world")]
     pub use crate::world::player::{InvalidationBus, InvalidationHandler, PlayerLoader};

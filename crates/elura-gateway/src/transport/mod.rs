@@ -16,7 +16,6 @@ use crate::GatewayServer;
 
 mod account_version;
 mod admission;
-mod dedup;
 mod drain;
 mod limits;
 mod observer;
@@ -35,14 +34,13 @@ pub use admission::{
     AdmissionController, AdmissionDecision, AdmissionRejection, AdmissionRequest,
     AdmissionSettings, AdmissionStage, RealmAdmission,
 };
-pub(crate) use dedup::ResponseCache;
 pub(crate) use drain::DrainController;
 pub(crate) use limits::{ConnectionLimiter, KeyedRateLimiter};
 pub(crate) use observer::notify as notify_session_observers;
 pub use observer::{SessionEvent, SessionEventKind, SessionObserver};
 pub(crate) use proxy::proxy_client_address;
 pub use proxy::{ProxyProtocolConfig, TrustedProxies};
-pub use quic::QuicConfig;
+pub use quic::{QuicConfig, QuicMode};
 pub(crate) use session::{SessionConnection, SessionIoConfig, SessionService, serve_stream};
 pub use udp::UdpConfig;
 pub use websocket::WebSocketConfig;

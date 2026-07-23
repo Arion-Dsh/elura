@@ -47,9 +47,9 @@ use crate::protection::{BackendProtector, ProtectionConfig, ProtectionStats};
 use crate::transport::{
     AccountVersionPolicy, AccountVersionSettings, AdmissionController, AdmissionPolicy,
     AdmissionRequest, AdmissionSettings, AdmissionStage, ConnectionLimiter, DrainController,
-    GatewayTransport, KeyedRateLimiter, RegisteredGatewayTransport, ResponseCache,
-    SessionConnection, SessionEventKind, SessionIoConfig, SessionObserver, SessionService,
-    notify_session_observers, register, serve_stream,
+    GatewayTransport, KeyedRateLimiter, RegisteredGatewayTransport, SessionConnection,
+    SessionEventKind, SessionIoConfig, SessionObserver, SessionService, notify_session_observers,
+    register, serve_stream,
 };
 use elura_runtime::observability::{AdminServerConfig, ReadinessProbe};
 use elura_runtime::security::{BoxedServiceStream, ClientTlsConfig, InternalToken};
@@ -104,10 +104,6 @@ pub struct GatewayConfig {
     pub handler_timeout: Duration,
     pub write_timeout: Duration,
     pub heartbeat_interval: Duration,
-    pub response_cache_ttl: Duration,
-    pub response_cache_capacity: usize,
-    /// Maximum response payload bytes retained by one Session's replay cache.
-    pub response_cache_max_bytes: usize,
     pub shutdown_timeout: Duration,
     pub readiness_timeout: Duration,
     pub ticket: GatewayTicketConfig,
@@ -148,9 +144,6 @@ impl Default for GatewayConfig {
             handler_timeout: Duration::from_secs(5),
             write_timeout: Duration::from_secs(10),
             heartbeat_interval: Duration::from_secs(30),
-            response_cache_ttl: Duration::from_secs(10),
-            response_cache_capacity: 128,
-            response_cache_max_bytes: 1 << 20,
             shutdown_timeout: Duration::from_secs(10),
             readiness_timeout: Duration::from_secs(2),
             ticket: GatewayTicketConfig::default(),
@@ -182,9 +175,6 @@ impl GatewayConfig {
             || self.handler_timeout.is_zero()
             || self.write_timeout.is_zero()
             || self.heartbeat_interval.is_zero()
-            || self.response_cache_ttl.is_zero()
-            || self.response_cache_capacity == 0
-            || self.response_cache_max_bytes == 0
             || self.shutdown_timeout.is_zero()
             || self.readiness_timeout.is_zero()
         {
@@ -1453,11 +1443,6 @@ impl ConnectionContext {
             let mut rate_limit_violations = 0_u32;
             let mut rate_limit_notified = false;
             let mut protocol_violations = 0_u32;
-            let mut responses = ResponseCache::new(
-                self.config.response_cache_ttl,
-                self.config.response_cache_capacity,
-                self.config.response_cache_max_bytes,
-            );
             let renew_interval = self
                 .online
                 .as_ref()
@@ -1589,12 +1574,8 @@ impl ConnectionContext {
             if rate_limit_violations == 0 {
                 rate_limit_notified = false;
             }
-            if let Some(cached) = responses.get(&frame)? {
-                response_tx
-                    .try_send(cached)
-                    .map_err(|_| Error::QueueFull)?;
-                continue;
-            }
+            // `request_id` correlates one transport attempt. Application retries always reach
+            // World; durable idempotency belongs to the application's operation ID and storage.
             if let Some(identity) = session.identity()
                 && let Some(policy) = &self.account_versions
             {
@@ -1629,26 +1610,17 @@ impl ConnectionContext {
                     self.handle(&session, &frame, authenticated.as_ref(), request_deadline),
                 ) => response,
             };
-            let (response, cacheable) = match response {
-                Ok(Ok(payload)) => (Frame::response(&frame, payload), true),
+            let response = match response {
+                Ok(Ok(payload)) => Frame::response(&frame, payload),
                 Ok(Err(error)) => {
                     self.stats.record_error(&error);
                     error_response(&frame, &error)
                 }
                 Err(_) => {
                     self.stats.failures.fetch_add(1, Ordering::Relaxed);
-                    (
-                        Frame::error(
-                            &frame,
-                            ErrorEnvelope::from(&Error::Timeout).to_bytes(),
-                        ),
-                        false,
-                    )
+                    Frame::error(&frame, ErrorEnvelope::from(&Error::Timeout).to_bytes())
                 }
             };
-            if cacheable {
-                responses.insert(&frame, response.clone());
-            }
             response_tx
                 .try_send(response)
                 .map_err(|_| Error::QueueFull)?;
@@ -2338,10 +2310,8 @@ fn identity_key(identity: &Identity) -> UserKey {
     (identity.region_id, identity.realm_id, identity.user_id)
 }
 
-fn error_response(request: &Frame, error: &Error) -> (Frame, bool) {
-    let envelope = ErrorEnvelope::from(error);
-    let cacheable = !envelope.retryable;
-    (Frame::error(request, envelope.to_bytes()), cacheable)
+fn error_response(request: &Frame, error: &Error) -> Frame {
+    Frame::error(request, ErrorEnvelope::from(error).to_bytes())
 }
 
 #[cfg(test)]
@@ -2434,14 +2404,6 @@ mod config_tests {
 
         let response_with_payload = Frame::response(&heartbeat, Bytes::from_static(b"fake"));
         assert!(validate_client_frame(&response_with_payload, true, Some(77)).is_err());
-    }
-
-    #[test]
-    fn only_terminal_errors_are_response_cached() {
-        let request = Frame::request(100, 1, Bytes::new()).unwrap();
-        assert!(!error_response(&request, &Error::Timeout).1);
-        assert!(!error_response(&request, &Error::Unavailable).1);
-        assert!(error_response(&request, &Error::business("DENIED", "denied"),).1);
     }
 
     #[tokio::test]

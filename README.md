@@ -29,7 +29,7 @@ or run together as a monolith.
 Install the CLI and scaffold an application:
 
 ```bash
-cargo install elura-cli --version 0.2.6
+cargo install elura-cli --version 0.2.7
 elura skill install
 elura init all --dir .
 ```
@@ -38,7 +38,7 @@ Or add the framework directly:
 
 ```toml
 [dependencies]
-elura = "0.2.6"
+elura = "0.2.7"
 ```
 
 The skill is installed in `.agents/skills/elura-app-development` for project-level coding agents.

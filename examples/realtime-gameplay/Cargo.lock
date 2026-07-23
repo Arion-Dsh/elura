@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "elura"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "elura-aoi",
  "elura-lag-compensation",
@@ -17,25 +17,25 @@ dependencies = [
 
 [[package]]
 name = "elura-aoi"
-version = "0.2.6"
+version = "0.2.7"
 
 [[package]]
 name = "elura-lag-compensation"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "elura-net-sim"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "elura-netcode"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "serde",
 ]
@@ -49,7 +49,7 @@ dependencies = [
 
 [[package]]
 name = "elura-replication"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "elura-netcode",
  "serde",
@@ -57,11 +57,11 @@ dependencies = [
 
 [[package]]
 name = "elura-room"
-version = "0.2.6"
+version = "0.2.7"
 
 [[package]]
 name = "elura-simulation"
-version = "0.2.6"
+version = "0.2.7"
 
 [[package]]
 name = "proc-macro2"

@@ -1426,7 +1426,7 @@ async fn unauthenticated_connection_is_closed_at_authentication_deadline() {
 }
 
 #[tokio::test]
-async fn duplicate_request_returns_cached_response_without_reexecution() {
+async fn duplicate_request_id_is_forwarded_to_the_application_again() {
     let address = free_address();
     let tickets = Arc::new(
         TicketService::new(
@@ -1502,8 +1502,8 @@ async fn duplicate_request_returns_cached_response_without_reexecution() {
         client.next().await.unwrap().unwrap().payload,
         Bytes::from_static(b"first")
     );
-    assert_eq!(world.0.load(Ordering::Relaxed), 1);
-    assert_eq!(interceptor.0.load(Ordering::Relaxed), 1);
+    assert_eq!(world.0.load(Ordering::Relaxed), 2);
+    assert_eq!(interceptor.0.load(Ordering::Relaxed), 2);
     drop(client);
     shutdown_tx.send(true).unwrap();
     task.await.unwrap().unwrap();

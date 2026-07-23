@@ -40,6 +40,26 @@ run inside a `Scene`, inside another application executor, or in client-side Rus
 | Hit validation | `LagCompensationHistory` | Record compact collision snapshots and perform ray casts or overlap tests |
 | Network testing | `SimulatedLink` | Choose reproducible weak-network profiles and assertions |
 
+For native action games that need both ordered business messages and loss-tolerant realtime
+updates, use QUIC hybrid mode and list only realtime application route IDs in `datagram_routes`.
+Authentication and every other route remain on the reliable stream:
+
+```rust
+use elura::transport::{QuicConfig, QuicMode};
+
+let mut quic = QuicConfig::from_pem_files(
+    "0.0.0.0:17003".parse()?,
+    "certs/quic-cert.pem",
+    "certs/quic-key.pem",
+);
+quic.mode = QuicMode::Hybrid;
+quic.datagram_routes = vec![120, 121]; // input and replication packets
+```
+
+The client must select the same routes for its outbound QUIC Datagrams. Keep inventory, rewards,
+match lifecycle, and other durable commands off that list. Datagram payloads must fit
+`max_datagram_bytes`; the default is 1100 bytes to avoid IP fragmentation on common paths.
+
 An authoritative action-game path normally accepts redundant inputs at Gateway, routes them to the
 owning World and Scene, consumes them on fixed simulation ticks, selects entities through AOI, and
 emits per-observer replication batches. The client predicts its local entity, reconciles against
