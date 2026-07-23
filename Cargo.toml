@@ -24,7 +24,7 @@ members = [
 exclude = ["examples/tiny-network-game", "examples/realtime-gameplay"]
 
 [workspace.package]
-version = "0.2.5"
+version = "0.2.6"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.97"
@@ -46,20 +46,20 @@ futures-util = { version = "0.3.32", features = ["sink"] }
 hex = "0.4.3"
 hmac = "0.13.0"
 http = "1.4.2"
-elura-core = { version = "0.2.5", path = "crates/elura-core" }
-elura-runtime = { version = "0.2.5", path = "crates/elura-runtime" }
-elura-gateway = { version = "0.2.5", path = "crates/elura-gateway" }
-elura-world = { version = "0.2.5", path = "crates/elura-world" }
-elura-room = { version = "0.2.5", path = "crates/elura-room" }
-elura-aoi = { version = "0.2.5", path = "crates/elura-aoi" }
-elura-simulation = { version = "0.2.5", path = "crates/elura-simulation" }
-elura-netcode = { version = "0.2.5", path = "crates/elura-netcode" }
-elura-replication = { version = "0.2.5", path = "crates/elura-replication" }
-elura-lag-compensation = { version = "0.2.5", path = "crates/elura-lag-compensation" }
-elura-net-sim = { version = "0.2.5", path = "crates/elura-net-sim" }
-elura-monolith = { version = "0.2.5", path = "crates/elura-monolith" }
-elura-adapters = { version = "0.2.5", path = "crates/elura-adapters", default-features = false }
-elura-providers = { version = "0.2.5", path = "crates/elura-providers", default-features = false }
+elura-core = { version = "0.2.6", path = "crates/elura-core" }
+elura-runtime = { version = "0.2.6", path = "crates/elura-runtime" }
+elura-gateway = { version = "0.2.6", path = "crates/elura-gateway" }
+elura-world = { version = "0.2.6", path = "crates/elura-world" }
+elura-room = { version = "0.2.6", path = "crates/elura-room" }
+elura-aoi = { version = "0.2.6", path = "crates/elura-aoi" }
+elura-simulation = { version = "0.2.6", path = "crates/elura-simulation" }
+elura-netcode = { version = "0.2.6", path = "crates/elura-netcode" }
+elura-replication = { version = "0.2.6", path = "crates/elura-replication" }
+elura-lag-compensation = { version = "0.2.6", path = "crates/elura-lag-compensation" }
+elura-net-sim = { version = "0.2.6", path = "crates/elura-net-sim" }
+elura-monolith = { version = "0.2.6", path = "crates/elura-monolith" }
+elura-adapters = { version = "0.2.6", path = "crates/elura-adapters", default-features = false }
+elura-providers = { version = "0.2.6", path = "crates/elura-providers", default-features = false }
 md-5 = "0.11.0"
 ipnet = "2"
 prost = "0.14.4"

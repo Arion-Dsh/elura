@@ -2,30 +2,33 @@ import {
   Elr2Frame,
   Elr2ProtocolError,
   FrameKind,
+  RequestId,
+  requestFrame,
+  responseFrame,
   validateFrame,
 } from "./elr2.js";
 
 export const GatewayRoutes = {
-  Authenticate: 1,
-  Heartbeat: 2,
-  Reconnect: 3,
-  SessionControl: 4,
-  FirstApplication: 100,
+  authenticate: 1,
+  heartbeat: 2,
+  reconnect: 3,
+  sessionControl: 4,
+  firstApplication: 100,
 } as const;
 
 export interface Identity {
-  account_id: number;
-  user_id: number;
-  region_id: number;
-  realm_id: number;
+  accountId: number;
+  userId: number;
+  regionId: number;
+  realmId: number;
   generation: number;
 }
 
 export interface AuthenticateRequest { ticket: string }
 export interface ReconnectTicketRequest { ticket: string }
-export interface ReconnectTicketResponse { ticket: string; expires_in_seconds: number }
+export interface ReconnectTicketResponse { ticket: string; expiresInSeconds: number }
 export interface AuthenticateResponse {
-  session_id: string;
+  sessionId: string;
   identity: Identity;
   reconnect: ReconnectTicketResponse;
 }
@@ -33,7 +36,7 @@ export interface ErrorEnvelope {
   code: string;
   message: string;
   retryable: boolean;
-  retry_after_ms?: number;
+  retryAfterMs?: number;
 }
 
 const utf8 = new TextEncoder();
@@ -73,19 +76,21 @@ function parseJson(payload: Uint8Array, description: string): unknown {
 }
 
 export function encodeAuthenticateRequest(ticket: string): Uint8Array {
-  return utf8.encode(JSON.stringify({ ticket } satisfies AuthenticateRequest));
+  return utf8.encode(JSON.stringify({
+    ticket: stringField(ticket, "ticket"),
+  } satisfies AuthenticateRequest));
 }
 
 export function decodeAuthenticateResponse(payload: Uint8Array): AuthenticateResponse {
   const value = object(parseJson(payload, "authentication response"), "authentication response");
   const identity = object(value.identity, "identity");
   return {
-    session_id: stringField(value.session_id, "session_id"),
+    sessionId: stringField(value.session_id, "session_id"),
     identity: {
-      account_id: safeInteger(identity.account_id, "account_id", true),
-      user_id: safeInteger(identity.user_id, "user_id", true),
-      region_id: positiveU32(identity.region_id, "region_id"),
-      realm_id: positiveU32(identity.realm_id, "realm_id"),
+      accountId: safeInteger(identity.account_id, "account_id", true),
+      userId: safeInteger(identity.user_id, "user_id", true),
+      regionId: positiveU32(identity.region_id, "region_id"),
+      realmId: positiveU32(identity.realm_id, "realm_id"),
       generation: safeInteger(identity.generation, "generation", true),
     },
     reconnect: reconnectTicket(value.reconnect),
@@ -94,7 +99,9 @@ export function decodeAuthenticateResponse(payload: Uint8Array): AuthenticateRes
 
 // Renewal consumes the current reconnect ticket before returning its replacement.
 export function encodeReconnectRequest(ticket: string): Uint8Array {
-  return utf8.encode(JSON.stringify({ ticket } satisfies ReconnectTicketRequest));
+  return utf8.encode(JSON.stringify({
+    ticket: stringField(ticket, "ticket"),
+  } satisfies ReconnectTicketRequest));
 }
 
 export function decodeReconnectResponse(payload: Uint8Array): ReconnectTicketResponse {
@@ -105,7 +112,7 @@ function reconnectTicket(value: unknown): ReconnectTicketResponse {
   const ticket = object(value, "reconnect ticket");
   return {
     ticket: stringField(ticket.ticket, "ticket"),
-    expires_in_seconds: safeInteger(
+    expiresInSeconds: safeInteger(
       ticket.expires_in_seconds,
       "expires_in_seconds",
       true,
@@ -115,19 +122,23 @@ function reconnectTicket(value: unknown): ReconnectTicketResponse {
 
 export function decodeErrorEnvelope(payload: Uint8Array): ErrorEnvelope {
   const value = object(parseJson(payload, "error envelope"), "error envelope");
-  const envelope = {
+  if (typeof value.retryable !== "boolean") {
+    throw new Elr2ProtocolError("invalid error envelope fields");
+  }
+  const retryAfterMs = value.retry_after_ms === undefined
+    ? undefined
+    : safeInteger(value.retry_after_ms, "retry_after_ms", true);
+  const envelope: ErrorEnvelope = {
     code: stringField(value.code, "error code"),
     message: stringField(value.message, "error message"),
     retryable: value.retryable,
-    retry_after_ms: value.retry_after_ms === undefined
-      ? undefined
-      : safeInteger(value.retry_after_ms, "retry_after_ms", true),
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
   };
-  if (typeof envelope.retryable !== "boolean" || !/^[A-Z0-9_]{1,64}$/.test(envelope.code) ||
+  if (!/^[A-Z0-9_]{1,64}$/.test(envelope.code) ||
       utf8.encode(envelope.message).byteLength > 1024) {
     throw new Elr2ProtocolError("invalid error envelope fields");
   }
-  return envelope as ErrorEnvelope;
+  return envelope;
 }
 
 export function validateClientFrame(
@@ -136,7 +147,7 @@ export function validateClientFrame(
   pendingHeartbeat?: bigint,
 ): void {
   validateFrame(frame);
-  if (frame.kind === FrameKind.Response && frame.route === GatewayRoutes.Heartbeat) {
+  if (frame.kind === FrameKind.Response && frame.route === GatewayRoutes.heartbeat) {
     if (pendingHeartbeat === undefined || frame.requestId !== pendingHeartbeat ||
         frame.sequence !== 0 || frame.payload.byteLength !== 0) {
       throw new Elr2ProtocolError("heartbeat response does not match an outstanding request");
@@ -146,30 +157,64 @@ export function validateClientFrame(
   if (frame.kind !== FrameKind.Request) {
     throw new Elr2ProtocolError("Gateway accepts request frames and heartbeat responses only");
   }
-  if (frame.route < GatewayRoutes.FirstApplication && frame.sequence !== 0) {
+  if (frame.route < GatewayRoutes.firstApplication && frame.sequence !== 0) {
     throw new Elr2ProtocolError("framework requests must have sequence zero");
   }
   const allowed = authenticated
-    ? frame.route === GatewayRoutes.Heartbeat || frame.route === GatewayRoutes.Reconnect ||
-      frame.route >= GatewayRoutes.FirstApplication
-    : frame.route === GatewayRoutes.Authenticate;
+    ? frame.route === GatewayRoutes.heartbeat || frame.route === GatewayRoutes.reconnect ||
+      frame.route >= GatewayRoutes.firstApplication
+    : frame.route === GatewayRoutes.authenticate;
   if (!allowed) throw new Elr2ProtocolError("route is not allowed in the current session state");
 }
 
 export function heartbeatResponse(request: Elr2Frame): Elr2Frame {
-  if (request.kind !== FrameKind.Request || request.route !== GatewayRoutes.Heartbeat ||
+  if (request.kind !== FrameKind.Request || request.route !== GatewayRoutes.heartbeat ||
       request.sequence !== 0 || request.payload.byteLength !== 0) {
     throw new Elr2ProtocolError("invalid heartbeat request");
   }
-  return {
-    kind: FrameKind.Response,
-    flags: 0,
-    route: request.route,
-    requestId: request.requestId,
-    sequence: 0,
-    payload: new Uint8Array(),
-  };
+  return responseFrame(request);
 }
+
+export function authenticateFrame(id: RequestId, ticket: string): Elr2Frame {
+  return requestFrame(GatewayRoutes.authenticate, id, encodeAuthenticateRequest(ticket));
+}
+
+export function reconnectFrame(id: RequestId, ticket: string): Elr2Frame {
+  return requestFrame(GatewayRoutes.reconnect, id, encodeReconnectRequest(ticket));
+}
+
+export function decodeAuthenticateFrame(frame: Elr2Frame): AuthenticateResponse {
+  requireResponse(frame, GatewayRoutes.authenticate, "authentication");
+  return decodeAuthenticateResponse(frame.payload);
+}
+
+export function decodeReconnectFrame(frame: Elr2Frame): ReconnectTicketResponse {
+  requireResponse(frame, GatewayRoutes.reconnect, "reconnect");
+  return decodeReconnectResponse(frame.payload);
+}
+
+export function decodeErrorFrame(frame: Elr2Frame): ErrorEnvelope {
+  if (frame.kind !== FrameKind.Error) {
+    throw new Elr2ProtocolError("expected an error frame");
+  }
+  return decodeErrorEnvelope(frame.payload);
+}
+
+function requireResponse(frame: Elr2Frame, route: number, description: string): void {
+  if (frame.kind !== FrameKind.Response || frame.route !== route) {
+    throw new Elr2ProtocolError(`expected a ${description} response frame`);
+  }
+}
+
+export const Gateway = {
+  routes: GatewayRoutes,
+  authenticate: authenticateFrame,
+  reconnect: reconnectFrame,
+  heartbeatResponse,
+  decodeAuthenticate: decodeAuthenticateFrame,
+  decodeReconnect: decodeReconnectFrame,
+  decodeError: decodeErrorFrame,
+} as const;
 
 export enum SessionControlAction {
   Kick = 1,
@@ -271,3 +316,8 @@ export function decodeSessionControl(payload: Uint8Array): SessionControl {
   }
   return { action: Number(action) as SessionControlAction, reason };
 }
+
+export const SessionControlCodec = {
+  encode: encodeSessionControl,
+  decode: decodeSessionControl,
+} as const;

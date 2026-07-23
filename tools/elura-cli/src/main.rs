@@ -1090,6 +1090,10 @@ mod tests {
             fs::read_to_string(directory.0.join("sdk/csharp/Elura.Protocol/Elr2.cs")).unwrap();
         let typescript_manifest =
             fs::read_to_string(directory.0.join("sdk/typescript/package.json")).unwrap();
+        let typescript =
+            fs::read_to_string(directory.0.join("sdk/typescript/src/elr2.ts")).unwrap();
+        let typescript_gateway =
+            fs::read_to_string(directory.0.join("sdk/typescript/src/gateway.ts")).unwrap();
         assert!(cpp_manifest.contains(&format!("VERSION {version}")));
         assert!(cpp_manifest.contains("cxx_std_20"));
         assert!(!cpp_manifest.contains("cxx_std_17"));
@@ -1099,6 +1103,8 @@ mod tests {
         assert!(csharp.contains("static Elr2Frame Request"));
         assert!(!csharp.contains("record Elr2Frame"));
         assert!(typescript_manifest.contains(&format!("\"version\": \"{version}\"")));
+        assert!(typescript.contains("export const Elr2"));
+        assert!(typescript_gateway.contains("export const Gateway"));
     }
 
     #[test]

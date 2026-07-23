@@ -1,19 +1,69 @@
 # Elura Gateway protocol for TypeScript
 
-This package implements the public Gateway-to-client ELR2 v{{ELR2_VERSION}} contract. It contains
-frame encoding, exact-message decoding, TCP stream reassembly, reserved routes, built-in JSON
-payloads, standard error envelopes, heartbeat frame validation, and Session Control protobuf
-encoding. It does not open sockets or dispatch application routes.
+`@elura/protocol` is a dependency-free, strict TypeScript implementation of the public
+Gateway-to-client ELR2 v{{ELR2_VERSION}} contract. It works in browsers and Node.js and includes
+frame encoding, TCP stream reassembly, authentication and reconnect payloads, error envelopes,
+heartbeat handling, and Session Control protobuf encoding.
+
+It does not open sockets or dispatch application routes.
+
+## Quick start
+
+Authentication creates both the JSON payload and frame. Request IDs can be normal safe integers;
+use `bigint` only when the full unsigned 64-bit range is required.
+
+```ts
+import { Elr2, Gateway } from "@elura/protocol";
+
+const request = Gateway.authenticate(nextRequestId++, loginTicket);
+socket.send(Elr2.encode(request));
+```
+
+Application routes start at 100. String payloads are encoded as UTF-8 automatically:
+
+```ts
+const request = Elr2.request(100, nextRequestId++, JSON.stringify({ x: 10, y: 20 }));
+socket.send(Elr2.encode(request));
+```
+
+For WebSocket transport, set `binaryType` to `"arraybuffer"`; `Elr2.decode` accepts either an
+`ArrayBuffer` or `Uint8Array` directly:
+
+```ts
+socket.binaryType = "arraybuffer";
+socket.onmessage = ({ data }) => handle(Elr2.decode(data as ArrayBuffer));
+```
+
+TCP and QUIC streams can split or combine frames:
+
+```ts
+const decoder = Elr2.stream();
+decoder.append(chunk);
+for (let frame; (frame = decoder.next()) !== undefined;) {
+  handle(frame);
+}
+```
+
+Reply to a server heartbeat with:
+
+```ts
+socket.send(Elr2.encode(Gateway.heartbeatResponse(heartbeat)));
+```
+
+Decode a successful authentication response without handling wire-format field names:
+
+```ts
+const auth = Gateway.decodeAuthenticate(frame);
+console.log(auth.sessionId, auth.identity.userId, auth.reconnect.expiresInSeconds);
+```
+
+For WebSocket transport, negotiate `{{PROTOCOL_IDENTIFIER}}` as the subprotocol. Retain only the
+latest reconnect ticket, renew it before `expiresInSeconds`, and replace it with the ticket returned
+by the reconnect response.
+
+Build and run the golden-vector tests:
 
 ```sh
 npm install
 npm test
 ```
-
-For WebSocket transport, send one frame per binary message and negotiate
-`{{PROTOCOL_IDENTIFIER}}` as the subprotocol. Request IDs are represented as `bigint` so the full
-unsigned 64-bit range is preserved.
-
-Every successful authentication response contains a reconnect ticket. Retain only the latest
-ticket, renew it before `expires_in_seconds` through the reconnect route, and replace it with the
-ticket returned by that response. The renewal request consumes the previous ticket.
