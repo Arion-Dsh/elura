@@ -2,39 +2,40 @@
 
 #include <algorithm>
 #include <limits>
+#include <utility>
 
 namespace elura {
 namespace {
 
-std::uint16_t read_u16(const std::uint8_t* bytes) {
+std::uint16_t read_u16(std::span<const std::uint8_t> bytes) {
   return static_cast<std::uint16_t>((static_cast<std::uint16_t>(bytes[0]) << 8U) |
                                     static_cast<std::uint16_t>(bytes[1]));
 }
 
-std::uint32_t read_u32(const std::uint8_t* bytes) {
+std::uint32_t read_u32(std::span<const std::uint8_t> bytes) {
   return (static_cast<std::uint32_t>(bytes[0]) << 24U) |
          (static_cast<std::uint32_t>(bytes[1]) << 16U) |
          (static_cast<std::uint32_t>(bytes[2]) << 8U) |
          static_cast<std::uint32_t>(bytes[3]);
 }
 
-std::uint64_t read_u64(const std::uint8_t* bytes) {
-  return (static_cast<std::uint64_t>(read_u32(bytes)) << 32U) | read_u32(bytes + 4);
+std::uint64_t read_u64(std::span<const std::uint8_t> bytes) {
+  return (static_cast<std::uint64_t>(read_u32(bytes)) << 32U) | read_u32(bytes.subspan(4));
 }
 
-void write_u16(std::vector<std::uint8_t>& output, std::size_t offset, std::uint16_t value) {
+void write_u16(Bytes& output, std::size_t offset, std::uint16_t value) {
   output[offset] = static_cast<std::uint8_t>(value >> 8U);
   output[offset + 1] = static_cast<std::uint8_t>(value);
 }
 
-void write_u32(std::vector<std::uint8_t>& output, std::size_t offset, std::uint32_t value) {
+void write_u32(Bytes& output, std::size_t offset, std::uint32_t value) {
   output[offset] = static_cast<std::uint8_t>(value >> 24U);
   output[offset + 1] = static_cast<std::uint8_t>(value >> 16U);
   output[offset + 2] = static_cast<std::uint8_t>(value >> 8U);
   output[offset + 3] = static_cast<std::uint8_t>(value);
 }
 
-void write_u64(std::vector<std::uint8_t>& output, std::size_t offset, std::uint64_t value) {
+void write_u64(Bytes& output, std::size_t offset, std::uint64_t value) {
   write_u32(output, offset, static_cast<std::uint32_t>(value >> 32U));
   write_u32(output, offset + 4, static_cast<std::uint32_t>(value));
 }
@@ -103,7 +104,7 @@ void validate_limit(std::size_t max_payload) {
   }
 }
 
-void append_varint(std::vector<std::uint8_t>& output, std::uint64_t value) {
+void append_varint(Bytes& output, std::uint64_t value) {
   while (value >= 0x80U) {
     output.push_back(static_cast<std::uint8_t>(value) | 0x80U);
     value >>= 7U;
@@ -111,9 +112,9 @@ void append_varint(std::vector<std::uint8_t>& output, std::uint64_t value) {
   output.push_back(static_cast<std::uint8_t>(value));
 }
 
-std::uint64_t read_varint(const std::uint8_t* bytes, std::size_t size, std::size_t& offset) {
+std::uint64_t read_varint(std::span<const std::uint8_t> bytes, std::size_t& offset) {
   std::uint64_t value = 0;
-  for (unsigned shift = 0; shift < 64 && offset < size; shift += 7) {
+  for (unsigned shift = 0; shift < 64 && offset < bytes.size(); shift += 7) {
     const auto byte = bytes[offset++];
     value |= static_cast<std::uint64_t>(byte & 0x7fU) << shift;
     if ((byte & 0x80U) == 0) return value;
@@ -122,21 +123,21 @@ std::uint64_t read_varint(const std::uint8_t* bytes, std::size_t size, std::size
 }
 
 void skip_field(
-    const std::uint8_t* bytes, std::size_t size, std::size_t& offset, std::uint64_t wire_type) {
+    std::span<const std::uint8_t> bytes, std::size_t& offset, std::uint64_t wire_type) {
   switch (wire_type) {
-    case 0: (void)read_varint(bytes, size, offset); return;
+    case 0: (void)read_varint(bytes, offset); return;
     case 1:
-      if (size - offset < 8) throw ProtocolError("truncated Session Control field");
+      if (bytes.size() - offset < 8) throw ProtocolError("truncated Session Control field");
       offset += 8;
       return;
     case 2: {
-      const auto length = read_varint(bytes, size, offset);
-      if (length > size - offset) throw ProtocolError("truncated Session Control field");
+      const auto length = read_varint(bytes, offset);
+      if (length > bytes.size() - offset) throw ProtocolError("truncated Session Control field");
       offset += static_cast<std::size_t>(length);
       return;
     }
     case 5:
-      if (size - offset < 4) throw ProtocolError("truncated Session Control field");
+      if (bytes.size() - offset < 4) throw ProtocolError("truncated Session Control field");
       offset += 4;
       return;
     default: throw ProtocolError("unsupported Session Control protobuf wire type");
@@ -149,6 +150,50 @@ SessionControlAction parse_action(std::uint64_t value) {
 }
 
 }  // namespace
+
+Bytes to_bytes(std::string_view text) {
+  return {text.begin(), text.end()};
+}
+
+std::string_view as_string(std::span<const std::uint8_t> bytes) noexcept {
+  if (bytes.empty()) return {};
+  return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
+
+Frame Frame::request(
+    std::uint32_t route, std::uint64_t request_id, Bytes payload, std::uint32_t sequence) {
+  Frame frame{FrameKind::Request, 0, route, request_id, sequence, std::move(payload)};
+  validate_frame(frame, kAbsoluteMaxPayload);
+  return frame;
+}
+
+Frame Frame::response(const Frame& request, Bytes payload) {
+  if (request.kind != FrameKind::Request) {
+    throw ProtocolError("response source must be a request frame");
+  }
+  Frame frame{
+      FrameKind::Response, 0, request.route, request.request_id, request.sequence,
+      std::move(payload)};
+  validate_frame(frame, kAbsoluteMaxPayload);
+  return frame;
+}
+
+Frame Frame::error(const Frame& request, Bytes payload) {
+  if (request.kind != FrameKind::Request) {
+    throw ProtocolError("error source must be a request frame");
+  }
+  Frame frame{
+      FrameKind::Error, 0, request.route, request.request_id, request.sequence,
+      std::move(payload)};
+  validate_frame(frame, kAbsoluteMaxPayload);
+  return frame;
+}
+
+Frame Frame::push(std::uint32_t route, Bytes payload, std::uint32_t sequence) {
+  Frame frame{FrameKind::Push, 0, route, 0, sequence, std::move(payload)};
+  validate_frame(frame, kAbsoluteMaxPayload);
+  return frame;
+}
 
 void validate_frame(const Frame& frame, std::size_t max_payload) {
   validate_limit(max_payload);
@@ -163,9 +208,9 @@ void validate_frame(const Frame& frame, std::size_t max_payload) {
   }
 }
 
-std::vector<std::uint8_t> encode_frame(const Frame& frame, std::size_t max_payload) {
+Bytes encode_frame(const Frame& frame, std::size_t max_payload) {
   validate_frame(frame, max_payload);
-  std::vector<std::uint8_t> output(kElr2HeaderLength + frame.payload.size());
+  Bytes output(kElr2HeaderLength + frame.payload.size());
   write_u32(output, 0, kElr2Magic);
   write_u16(output, 4, kElr2Version);
   output[6] = static_cast<std::uint8_t>(frame.kind);
@@ -178,24 +223,26 @@ std::vector<std::uint8_t> encode_frame(const Frame& frame, std::size_t max_paylo
   return output;
 }
 
-Frame decode_frame(const std::uint8_t* bytes, std::size_t size, std::size_t max_payload) {
+Frame decode_frame(std::span<const std::uint8_t> bytes, std::size_t max_payload) {
   validate_limit(max_payload);
-  if (size < kElr2HeaderLength) throw ProtocolError("incomplete Elura frame");
+  if (bytes.size() < kElr2HeaderLength) throw ProtocolError("incomplete Elura frame");
   if (read_u32(bytes) != kElr2Magic) throw ProtocolError("invalid Elura magic");
-  if (read_u16(bytes + 4) != kElr2Version) throw ProtocolError("unsupported Elura version");
-  const auto payload_size = static_cast<std::size_t>(read_u32(bytes + 24));
+  if (read_u16(bytes.subspan(4)) != kElr2Version) {
+    throw ProtocolError("unsupported Elura version");
+  }
+  const auto payload_size = static_cast<std::size_t>(read_u32(bytes.subspan(24)));
   if (payload_size > max_payload) throw ProtocolError("Elura payload is too large");
   if (payload_size > std::numeric_limits<std::size_t>::max() - kElr2HeaderLength ||
-      size != kElr2HeaderLength + payload_size) {
+      bytes.size() != kElr2HeaderLength + payload_size) {
     throw ProtocolError("Elura message must contain exactly one frame");
   }
   Frame frame;
   frame.kind = parse_kind(bytes[6]);
   frame.flags = bytes[7];
-  frame.route = read_u32(bytes + 8);
-  frame.request_id = read_u64(bytes + 12);
-  frame.sequence = read_u32(bytes + 20);
-  frame.payload.assign(bytes + kElr2HeaderLength, bytes + size);
+  frame.route = read_u32(bytes.subspan(8));
+  frame.request_id = read_u64(bytes.subspan(12));
+  frame.sequence = read_u32(bytes.subspan(20));
+  frame.payload.assign(bytes.begin() + kElr2HeaderLength, bytes.end());
   validate_frame(frame, max_payload);
   return frame;
 }
@@ -204,33 +251,32 @@ StreamDecoder::StreamDecoder(std::size_t max_payload) : max_payload_(max_payload
   validate_limit(max_payload_);
 }
 
-void StreamDecoder::append(const std::uint8_t* bytes, std::size_t size) {
-  if (size != 0 && bytes == nullptr) throw std::invalid_argument("bytes must not be null");
-  if (size == 0) return;
-  buffer_.insert(buffer_.end(), bytes, bytes + size);
+void StreamDecoder::append(std::span<const std::uint8_t> bytes) {
+  buffer_.insert(buffer_.end(), bytes.begin(), bytes.end());
 }
 
-bool StreamDecoder::next(Frame& frame) {
-  if (buffer_.size() < kElr2HeaderLength) return false;
-  if (read_u32(buffer_.data()) != kElr2Magic) throw ProtocolError("invalid Elura magic");
-  if (read_u16(buffer_.data() + 4) != kElr2Version) {
+std::optional<Frame> StreamDecoder::next() {
+  if (buffer_.size() < kElr2HeaderLength) return std::nullopt;
+  const std::span<const std::uint8_t> bytes = buffer_;
+  if (read_u32(bytes) != kElr2Magic) throw ProtocolError("invalid Elura magic");
+  if (read_u16(bytes.subspan(4)) != kElr2Version) {
     throw ProtocolError("unsupported Elura version");
   }
-  const auto payload_size = static_cast<std::size_t>(read_u32(buffer_.data() + 24));
+  const auto payload_size = static_cast<std::size_t>(read_u32(bytes.subspan(24)));
   if (payload_size > max_payload_) throw ProtocolError("Elura payload is too large");
   const auto total = kElr2HeaderLength + payload_size;
-  if (buffer_.size() < total) return false;
-  frame = decode_frame(buffer_.data(), total, max_payload_);
+  if (buffer_.size() < total) return std::nullopt;
+  auto frame = decode_frame(bytes.first(total), max_payload_);
   buffer_.erase(buffer_.begin(), buffer_.begin() + static_cast<std::ptrdiff_t>(total));
-  return true;
+  return frame;
 }
 
-std::vector<std::uint8_t> encode_session_control(const SessionControl& control) {
+Bytes encode_session_control(const SessionControl& control) {
   const auto action = static_cast<std::int32_t>(control.action);
   if (action < 1 || action > 5) throw ProtocolError("unknown Session Control action");
   if (control.reason.size() > 256) throw ProtocolError("Session Control reason exceeds 256 bytes");
   if (!valid_utf8(control.reason)) throw ProtocolError("invalid Session Control UTF-8");
-  std::vector<std::uint8_t> output{0x08U};
+  Bytes output{0x08U};
   append_varint(output, static_cast<std::uint64_t>(action));
   if (!control.reason.empty()) {
     output.push_back(0x12U);
@@ -240,24 +286,26 @@ std::vector<std::uint8_t> encode_session_control(const SessionControl& control) 
   return output;
 }
 
-SessionControl decode_session_control(const std::uint8_t* bytes, std::size_t size) {
+SessionControl decode_session_control(std::span<const std::uint8_t> bytes) {
   std::size_t offset = 0;
   std::uint64_t action = 0;
   std::string reason;
-  while (offset < size) {
-    const auto tag = read_varint(bytes, size, offset);
+  while (offset < bytes.size()) {
+    const auto tag = read_varint(bytes, offset);
     const auto field = tag >> 3U;
     const auto wire_type = tag & 7U;
     if (field == 0) throw ProtocolError("invalid Session Control protobuf tag");
     if (field == 1 && wire_type == 0) {
-      action = read_varint(bytes, size, offset);
+      action = read_varint(bytes, offset);
     } else if (field == 2 && wire_type == 2) {
-      const auto length = read_varint(bytes, size, offset);
-      if (length > size - offset) throw ProtocolError("truncated Session Control reason");
-      reason.assign(reinterpret_cast<const char*>(bytes + offset), static_cast<std::size_t>(length));
+      const auto length = read_varint(bytes, offset);
+      if (length > bytes.size() - offset) throw ProtocolError("truncated Session Control reason");
+      reason.assign(
+          reinterpret_cast<const char*>(bytes.data() + offset),
+          static_cast<std::size_t>(length));
       offset += static_cast<std::size_t>(length);
     } else {
-      skip_field(bytes, size, offset, wire_type);
+      skip_field(bytes, offset, wire_type);
     }
   }
   if (reason.size() > 256) throw ProtocolError("Session Control reason exceeds 256 bytes");

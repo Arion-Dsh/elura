@@ -3,8 +3,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace elura {
@@ -29,13 +31,28 @@ enum class FrameKind : std::uint8_t {
   Error = 4,
 };
 
+using Bytes = std::vector<std::uint8_t>;
+
+[[nodiscard]] Bytes to_bytes(std::string_view text);
+[[nodiscard]] std::string_view as_string(std::span<const std::uint8_t> bytes) noexcept;
+
 struct Frame {
   FrameKind kind = FrameKind::Request;
   std::uint8_t flags = 0;
   std::uint32_t route = 0;
   std::uint64_t request_id = 0;
   std::uint32_t sequence = 0;
-  std::vector<std::uint8_t> payload;
+  Bytes payload;
+
+  [[nodiscard]] static Frame request(
+      std::uint32_t route, std::uint64_t request_id, Bytes payload = {},
+      std::uint32_t sequence = 0);
+  [[nodiscard]] static Frame response(const Frame& request, Bytes payload = {});
+  [[nodiscard]] static Frame error(const Frame& request, Bytes payload = {});
+  [[nodiscard]] static Frame push(
+      std::uint32_t route, Bytes payload = {}, std::uint32_t sequence = 0);
+
+  bool operator==(const Frame&) const = default;
 };
 
 class ProtocolError : public std::runtime_error {
@@ -44,28 +61,23 @@ class ProtocolError : public std::runtime_error {
 };
 
 void validate_frame(const Frame& frame, std::size_t max_payload = kDefaultMaxPayload);
-std::vector<std::uint8_t> encode_frame(
+[[nodiscard]] Bytes encode_frame(
     const Frame& frame, std::size_t max_payload = kDefaultMaxPayload);
-Frame decode_frame(
-    const std::uint8_t* bytes, std::size_t size,
+[[nodiscard]] Frame decode_frame(
+    std::span<const std::uint8_t> bytes,
     std::size_t max_payload = kDefaultMaxPayload);
-inline Frame decode_frame(
-    const std::vector<std::uint8_t>& bytes,
-    std::size_t max_payload = kDefaultMaxPayload) {
-  return decode_frame(bytes.data(), bytes.size(), max_payload);
-}
 
 class StreamDecoder {
  public:
   explicit StreamDecoder(std::size_t max_payload = kDefaultMaxPayload);
-  void append(const std::uint8_t* bytes, std::size_t size);
-  void append(const std::vector<std::uint8_t>& bytes) { append(bytes.data(), bytes.size()); }
-  bool next(Frame& frame);
-  std::size_t buffered() const noexcept { return buffer_.size(); }
+  void append(std::span<const std::uint8_t> bytes);
+  [[nodiscard]] std::optional<Frame> next();
+  [[nodiscard]] std::size_t buffered() const noexcept { return buffer_.size(); }
+  [[nodiscard]] bool empty() const noexcept { return buffer_.empty(); }
 
  private:
   std::size_t max_payload_;
-  std::vector<std::uint8_t> buffer_;
+  Bytes buffer_;
 };
 
 // JSON payload models. Serialized field names are the snake_case names shown below.
@@ -115,10 +127,7 @@ struct SessionControl {
   std::string reason;
 };
 
-std::vector<std::uint8_t> encode_session_control(const SessionControl& control);
-SessionControl decode_session_control(const std::uint8_t* bytes, std::size_t size);
-inline SessionControl decode_session_control(const std::vector<std::uint8_t>& bytes) {
-  return decode_session_control(bytes.data(), bytes.size());
-}
+[[nodiscard]] Bytes encode_session_control(const SessionControl& control);
+[[nodiscard]] SessionControl decode_session_control(std::span<const std::uint8_t> bytes);
 
 }  // namespace elura

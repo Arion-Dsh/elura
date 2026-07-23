@@ -1,8 +1,28 @@
 # Elura Gateway protocol for C++
 
-This dependency-free C++17 library implements the public Gateway-to-client ELR2 v{{ELR2_VERSION}}
+This dependency-free C++20 library implements the public Gateway-to-client ELR2 v{{ELR2_VERSION}}
 wire contract. It contains frame encoding, exact-message decoding, TCP stream reassembly,
 reserved routes, JSON payload model types, and Session Control protobuf encoding.
+
+## Quick start
+
+```cpp
+#include <elura/elr2.hpp>
+
+auto request = elura::Frame::request(
+    100, request_id, elura::to_bytes(R"({"name":"Ada"})"));
+auto wire_bytes = elura::encode_frame(request);
+
+// A complete WebSocket message.
+auto response = elura::decode_frame(received_bytes);
+
+// A TCP or QUIC stream. std::vector, std::array, and std::span work directly.
+elura::StreamDecoder decoder;
+decoder.append(received_chunk);
+while (auto frame = decoder.next()) {
+  handle(*frame);
+}
+```
 
 Build and run the golden-vector tests:
 
@@ -10,6 +30,12 @@ Build and run the golden-vector tests:
 cmake -S . -B build -DBUILD_TESTING=ON
 cmake --build build
 ctest --test-dir build --output-on-failure
+```
+
+When embedding the SDK with `add_subdirectory`, link the namespaced target:
+
+```cmake
+target_link_libraries(my_client PRIVATE elura::protocol)
 ```
 
 Transport integration is intentionally outside this package:

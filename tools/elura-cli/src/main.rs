@@ -1075,6 +1075,8 @@ mod tests {
         let cpp = fs::read_to_string(directory.0.join("sdk/cpp/include/elura/elr2.hpp")).unwrap();
         assert!(cpp.contains(&format!("kElr2Version = {}", elura_core::protocol::VERSION)));
         assert!(cpp.contains(elura_core::protocol::PROTOCOL_IDENTIFIER));
+        assert!(cpp.contains("std::span<const std::uint8_t>"));
+        assert!(cpp.contains("static Frame request"));
 
         let version = env!("CARGO_PKG_VERSION");
         let cpp_manifest = fs::read_to_string(directory.0.join("sdk/cpp/CMakeLists.txt")).unwrap();
@@ -1087,6 +1089,8 @@ mod tests {
         let typescript_manifest =
             fs::read_to_string(directory.0.join("sdk/typescript/package.json")).unwrap();
         assert!(cpp_manifest.contains(&format!("VERSION {version}")));
+        assert!(cpp_manifest.contains("cxx_std_20"));
+        assert!(!cpp_manifest.contains("cxx_std_17"));
         assert!(csharp_manifest.contains(&format!("<Version>{version}</Version>")));
         assert!(typescript_manifest.contains(&format!("\"version\": \"{version}\"")));
     }
