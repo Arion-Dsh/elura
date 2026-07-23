@@ -39,7 +39,7 @@ Tokio applications can enable the optional stream adapter:
 
 ```toml
 [dependencies]
-elura-protocol = { version = "0.2.9", features = ["tokio-codec"] }
+elura-protocol = { version = "0.2.10", features = ["tokio-codec"] }
 futures-util = { version = "0.3", features = ["sink"] }
 tokio = { version = "1", features = ["net", "macros", "rt-multi-thread"] }
 tokio-util = { version = "0.7", features = ["codec"] }

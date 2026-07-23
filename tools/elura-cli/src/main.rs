@@ -230,7 +230,7 @@ const SDK_TYPESCRIPT: &[Artifact] = &[
 const SDK_RUST: &[Artifact] = &[
     Artifact {
         path: "sdk/rust/Cargo.toml",
-        template: include_str!("templates/sdk/rust/Cargo.toml"),
+        template: include_str!("templates/sdk/rust/Cargo.toml.tmpl"),
     },
     Artifact {
         path: "sdk/rust/README.md",

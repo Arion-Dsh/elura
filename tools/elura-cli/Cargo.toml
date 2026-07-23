@@ -8,6 +8,9 @@ authors.workspace = true
 readme = "../../README.md"
 description = "Project scaffold generator for Elura applications"
 documentation = "https://docs.rs/elura-cli"
+include = [
+    "src/**",
+]
 
 [dependencies]
 elura-core.workspace = true

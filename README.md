@@ -96,7 +96,7 @@ receive the server-owned ELR2 `Session` identity.
 Install the CLI and scaffold an application:
 
 ```bash
-cargo install elura-cli --version 0.2.9
+cargo install elura-cli --version 0.2.10
 elura skill install
 elura init all --dir .
 ```
@@ -105,7 +105,7 @@ Or add the framework directly:
 
 ```toml
 [dependencies]
-elura = "0.2.9"
+elura = "0.2.10"
 ```
 
 The skill is installed in `.agents/skills/elura-app-development` for project-level coding agents.
