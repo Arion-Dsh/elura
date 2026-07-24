@@ -279,7 +279,7 @@ struct HttpAuthApiInner {
 ///
 /// - `POST /elura/auth/login`
 /// - `POST /elura/auth/refresh`
-/// - `POST /elura/game/session-ticket`
+/// - `POST /elura/auth/session-ticket`
 #[derive(Clone)]
 pub struct HttpAuthApi {
     inner: Arc<HttpAuthApiInner>,
@@ -311,7 +311,7 @@ impl HttpAuthApi {
     /// Builds an Axum router containing the authentication endpoints.
     pub fn router(&self) -> Router {
         let protected = Router::new()
-            .route("/elura/game/session-ticket", post(issue_session_ticket))
+            .route("/elura/auth/session-ticket", post(issue_session_ticket))
             .route_layer(middleware::from_fn_with_state(
                 self.bearer_auth(),
                 require_bearer,
@@ -666,7 +666,7 @@ mod tests {
         let unauthorized = second
             .router()
             .oneshot(json_request(
-                "/elura/game/session-ticket",
+                "/elura/auth/session-ticket",
                 serde_json::json!({"user_id": 23, "region_id": 1, "realm_id": 2}),
             ))
             .await
@@ -674,7 +674,7 @@ mod tests {
         assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
 
         let mut request = json_request(
-            "/elura/game/session-ticket",
+            "/elura/auth/session-ticket",
             serde_json::json!({"user_id": 23, "region_id": 1, "realm_id": 2}),
         );
         request.headers_mut().insert(
@@ -687,6 +687,16 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let ticket: GatewaySessionTicket = response_json(response).await;
         assert_eq!(ticket.expires_in_seconds, 60);
+
+        let removed = first
+            .router()
+            .oneshot(json_request(
+                "/elura/game/session-ticket",
+                serde_json::json!({"user_id": 23, "region_id": 1, "realm_id": 2}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(removed.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

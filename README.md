@@ -44,7 +44,7 @@ ELR2 connection
 ```
 
 [`HttpAuthApi`](https://docs.rs/elura/latest/elura/gateway/http_auth/struct.HttpAuthApi.html)
-provides `/elura/auth/login`, `/elura/auth/refresh`, and `/elura/game/session-ticket`. With both the
+provides `/elura/auth/login`, `/elura/auth/refresh`, and `/elura/auth/session-ticket`. With both the
 `gateway` and `identity` features enabled, `IdentityHttpBackend` connects the built-in
 `IdentityService` and its password, phone, OAuth2, WeChat, Douyin, and QuickSDK providers directly
 to this API. Applications implement only `IdentityHttpPolicy` to grant scopes and verify that a
