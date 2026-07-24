@@ -109,3 +109,13 @@ cargo test --workspace --all-features
 cargo clippy --workspace --all-features --all-targets -- -D warnings
 cargo bench --workspace
 ```
+
+## Publishing
+
+Publish `elura-protocol` first, then publish `elura-client` after the same
+protocol version is available from crates.io:
+
+```sh
+cargo publish -p elura-protocol
+cargo publish -p elura-client
+```
