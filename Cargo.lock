@@ -966,7 +966,7 @@ dependencies = [
 
 [[package]]
 name = "elura"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "elura-adapters",
  "elura-aoi",
@@ -988,7 +988,7 @@ dependencies = [
 
 [[package]]
 name = "elura-adapters"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1013,15 +1013,15 @@ dependencies = [
 
 [[package]]
 name = "elura-aoi"
-version = "0.2.11"
+version = "0.3.0"
 
 [[package]]
 name = "elura-cli"
-version = "0.2.11"
+version = "0.3.0"
 
 [[package]]
 name = "elura-core"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -1042,7 +1042,7 @@ dependencies = [
 
 [[package]]
 name = "elura-gateway"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1070,14 +1070,14 @@ dependencies = [
 
 [[package]]
 name = "elura-lag-compensation"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "elura-load"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1097,7 +1097,7 @@ dependencies = [
 
 [[package]]
 name = "elura-monolith"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1116,21 +1116,21 @@ dependencies = [
 
 [[package]]
 name = "elura-net-sim"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "elura-netcode"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "elura-perf"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "elura-adapters",
  "elura-core",
@@ -1142,7 +1142,7 @@ dependencies = [
 
 [[package]]
 name = "elura-providers"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1175,7 +1175,7 @@ dependencies = [
 
 [[package]]
 name = "elura-replication"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "elura-aoi",
  "elura-netcode",
@@ -1184,11 +1184,11 @@ dependencies = [
 
 [[package]]
 name = "elura-room"
-version = "0.2.11"
+version = "0.3.0"
 
 [[package]]
 name = "elura-runtime"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1208,11 +1208,11 @@ dependencies = [
 
 [[package]]
 name = "elura-simulation"
-version = "0.2.11"
+version = "0.3.0"
 
 [[package]]
 name = "elura-testkit"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1231,7 +1231,7 @@ dependencies = [
 
 [[package]]
 name = "elura-world"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "axum",

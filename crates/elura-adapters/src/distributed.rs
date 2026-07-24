@@ -1,9 +1,9 @@
 use async_trait::async_trait;
-use elura_core::online::{
+use elura_core::{Error, Result};
+use elura_gateway::presence::{
     DuplicateLoginMode, OnlineAdmission, OnlineAdmissionPolicy, OnlineDirectory, OnlineStats,
     OnlineStatsReader, SessionLease,
 };
-use elura_core::{Error, Result};
 use elura_runtime::observability::ReadinessProbe;
 use std::collections::HashSet;
 use std::time::{Duration, SystemTime};

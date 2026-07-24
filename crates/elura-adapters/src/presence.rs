@@ -1,3 +1,3 @@
-//! Online-presence adapters.
+//! Gateway-presence adapters.
 
 pub use crate::distributed::RedisOnlineDirectory;

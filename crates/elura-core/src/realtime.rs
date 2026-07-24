@@ -103,7 +103,12 @@ pub trait SnapshotPublisher<S>: Send + Sync + 'static {
 }
 
 #[async_trait]
-pub trait Simulation: Send + 'static {
+/// Authoritative room state machine driven by Elura's realtime runtime.
+///
+/// The implementation owns deterministic game state. Elura schedules commands,
+/// advances ticks, creates canonical snapshots, and optionally restores an
+/// earlier snapshot during rollback.
+pub trait AuthoritativeSimulation: Send + 'static {
     type Command: Send + Clone + 'static;
     type Snapshot: Send + Sync + Clone + 'static;
     async fn apply(&mut self, command: Command<Self::Command>) -> Result<()>;
@@ -231,7 +236,7 @@ struct Runtime<C, S> {
     initialized: bool,
 }
 
-pub struct Room<S: Simulation> {
+pub struct Room<S: AuthoritativeSimulation> {
     id: Arc<str>,
     config: RoomConfig,
     delta: Duration,
@@ -248,7 +253,7 @@ pub struct Room<S: Simulation> {
     publisher: Option<Arc<dyn SnapshotPublisher<S::Snapshot>>>,
 }
 
-impl<S: Simulation> Room<S> {
+impl<S: AuthoritativeSimulation> Room<S> {
     pub fn new(id: impl Into<Arc<str>>, config: RoomConfig, simulation: S) -> Result<Self> {
         Self::with_observer(id, config, simulation, None)
     }
@@ -749,7 +754,7 @@ mod tests {
         player_in(1, user_id)
     }
     #[async_trait]
-    impl Simulation for Sim {
+    impl AuthoritativeSimulation for Sim {
         type Command = Add;
         type Snapshot = State;
         async fn apply(&mut self, c: Command<Add>) -> Result<()> {

@@ -106,8 +106,8 @@ jobs:
       - run: cargo hack check --workspace --each-feature --no-dev-deps
 
   semver:
-    # Set ELURA_API_BASELINE_REV to the freeze commit/tag after the intentional
-    # pre-1.0 redesign lands. Until then there is no compatibility contract.
+    # The 0.3.x API is frozen. Set ELURA_API_BASELINE_REV to v0.3.0 after the
+    # release tag is created.
     if: github.event_name == 'pull_request' && vars.ELURA_API_BASELINE_REV != ''
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -118,7 +118,7 @@ jobs:
       - name: Check public API compatibility
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
-          package: elura-core, elura-runtime, elura-gateway, elura-world, elura-room, elura-aoi, elura-simulation, elura-netcode, elura-replication, elura-lag-compensation, elura-net-sim, elura-monolith, elura-adapters, elura-providers, elura
+          package: elura-core, elura-runtime, elura-gateway, elura-world, elura-room, elura-aoi, elura-simulation, elura-netcode, elura-replication, elura-lag-compensation, elura-net-sim, elura-monolith, elura-testkit, elura-adapters, elura-providers, elura
           baseline-rev: ${{ vars.ELURA_API_BASELINE_REV }}
           feature-group: all-features
           rust-toolchain: 1.97.0

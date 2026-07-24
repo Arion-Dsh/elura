@@ -12,14 +12,8 @@ use async_trait::async_trait;
 use axum::Router;
 use bytes::Bytes;
 use elura_core::account_version::{AccountVersionKey, AccountVersionStore};
+use elura_core::gateway_world::WorldRequest;
 use elura_core::gateway_world::{GatewayWorldCommand, WorldCommand};
-pub use elura_core::gateway_world::{
-    GatewayWorldRoutingConfig, WorldClient, WorldDiscovery, WorldRequest, WorldRouteTarget,
-    WorldRouteUpdater,
-};
-use elura_core::online::{
-    DuplicateLoginMode, OnlineAdmission, OnlineAdmissionPolicy, OnlineDirectory, SessionLease,
-};
 use elura_core::ownership::{OwnershipResolver, shard_for};
 use elura_core::protocol::{
     FIRST_APPLICATION_ROUTE, Frame, FrameCodec, FrameKind, HEADER_LEN, ROUTE_AUTHENTICATE,
@@ -27,11 +21,12 @@ use elura_core::protocol::{
 };
 use elura_core::push::{PushHandler, PushReceipt, PushRequest, PushTarget, PushTransport};
 use elura_core::rate_limit::TokenBucket;
+use elura_core::replay_protection::ReplayProtectionStore;
 use elura_core::session::{
     Identity, Session, SessionControlEvent, SessionControlHandler, SessionControlKind,
     SessionControlTransport,
 };
-use elura_core::ticket::{ReplayStore, TicketPurpose, TicketService};
+use elura_core::ticket::{TicketPurpose, TicketService};
 use elura_core::{Error, ErrorEnvelope, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -43,6 +38,10 @@ use tokio_util::codec::Framed;
 use tracing::{Instrument, debug};
 use uuid::Uuid;
 
+use crate::discovery::{GatewayWorldRoutingConfig, WorldClient, WorldDiscovery, WorldRouteUpdater};
+use crate::presence::{
+    DuplicateLoginMode, OnlineAdmission, OnlineAdmissionPolicy, OnlineDirectory, SessionLease,
+};
 use crate::protection::{BackendProtector, ProtectionConfig, ProtectionStats};
 use crate::transport::{
     AccountVersionPolicy, AccountVersionSettings, AdmissionController, AdmissionPolicy,
@@ -55,13 +54,60 @@ use elura_runtime::observability::{AdminServerConfig, ReadinessProbe};
 use elura_runtime::security::{BoxedServiceStream, ClientTlsConfig, InternalToken};
 use observability::{AdminServer, AdmissionAdmin, GatewayAdmin, Readiness};
 mod builder;
+pub mod discovery;
 mod gateway;
-pub mod http_auth;
+mod http_auth;
 mod interceptor;
 pub mod observability;
+pub mod presence;
 pub mod protection;
 mod routing;
 pub mod transport;
+
+/// HTTP login, bearer-token, and game-session authentication contracts.
+pub mod auth {
+    pub use crate::http_auth::{
+        AuthenticatedHttp, GAME_CONNECT_SCOPE, GameSessionTicketRequest, GatewaySessionTicket,
+        HttpAuthApi, HttpAuthErrorResponse, HttpAuthRejection, HttpBearerAuth, HttpLoginBackend,
+        HttpLoginGrant, HttpLoginRequest, HttpLoginResponse, HttpRefreshRequest, require_bearer,
+    };
+    pub use elura_core::http_auth::{
+        HttpTokenClaims, HttpTokenPair, HttpTokenPurpose, HttpTokenService,
+    };
+
+    /// Identity-provider bridge for the HTTP authentication API.
+    #[cfg(feature = "identity-http")]
+    pub mod identity {
+        pub use crate::http_auth::identity::{IdentityHttpBackend, IdentityHttpPolicy};
+    }
+}
+
+/// Connection and authenticated-session admission contracts.
+pub mod admission {
+    pub use crate::observability::AdmissionAdmin;
+    pub use crate::transport::{
+        AdmissionController, AdmissionDecision, AdmissionRejection, AdmissionRequest,
+        AdmissionSettings, AdmissionStage, RealmAdmission,
+    };
+}
+
+/// Account-version and cross-Gateway session-control contracts.
+pub mod session {
+    pub use crate::transport::{
+        AccountVersionSettings, SessionEvent, SessionEventKind, SessionObserver,
+    };
+    pub use elura_core::account_version::{
+        AccountVersionKey, AccountVersionStore, MutableAccountVersionStore,
+    };
+    pub use elura_core::session::{
+        SessionControlEvent, SessionControlHandler, SessionControlKind, SessionControlTransport,
+    };
+}
+
+/// Session-ticket issuance contracts.
+pub mod ticket {
+    pub use elura_core::ticket::{TicketPurpose, TicketService};
+}
 
 pub use gateway::Gateway;
 pub use interceptor::{
@@ -732,7 +778,7 @@ struct NamedReadinessProbe {
 pub struct GatewayServer {
     config: GatewayConfig,
     tickets: Arc<TicketService>,
-    replay: Arc<dyn ReplayStore>,
+    replay: Arc<dyn ReplayProtectionStore>,
     world: Arc<dyn WorldClient>,
     sessions: SessionSenders,
     ownership: Option<(u32, Arc<dyn OwnershipResolver>)>,
@@ -773,7 +819,7 @@ impl GatewayServer {
     pub fn new(
         config: GatewayConfig,
         tickets: Arc<TicketService>,
-        replay: Arc<dyn ReplayStore>,
+        replay: Arc<dyn ReplayProtectionStore>,
         world: Arc<dyn WorldClient>,
     ) -> Result<Self> {
         config.validate()?;
@@ -1370,7 +1416,7 @@ impl GatewayServer {
 struct ConnectionContext {
     config: GatewayConfig,
     tickets: Arc<TicketService>,
-    replay: Arc<dyn ReplayStore>,
+    replay: Arc<dyn ReplayProtectionStore>,
     world: Arc<dyn WorldClient>,
     sessions: SessionSenders,
     ownership: Option<(u32, Arc<dyn OwnershipResolver>)>,

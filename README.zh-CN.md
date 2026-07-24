@@ -18,7 +18,7 @@ Elura 是一个面向权威实时玩法与可扩展在线游戏服务的开源�
 独立扩展，也可以组合成单体进程运行。
 
 > [!IMPORTANT]
-> Elura 正处于活跃的 `0.x` 开发阶段，小版本更新可能包含破坏性 API 变更。
+> `0.3.x` API 已冻结。补丁版本保持公开 API 兼容；破坏性变更只会进入 `0.4.0`。
 
 ## 架构
 
@@ -66,7 +66,7 @@ Elura 适合：
 安装 CLI 并生成应用：
 
 ```bash
-cargo install elura-cli --version 0.2.11
+cargo install elura-cli --version 0.3.0
 elura init all --dir .
 ```
 
@@ -74,10 +74,22 @@ elura init all --dir .
 
 ```toml
 [dependencies]
-elura = "0.2.11"
+elura = "0.3.0"
 ```
 
 概念、配置、crate feature、部署和教程请参阅[项目文档](https://elura.rustyspottedcat.dev/)。
+
+Facade 将契约放在消费它的运行时或能力模块中：
+
+- `elura::gateway` 管理连接、服务发现、在线状态、会话和 ticket API。
+- `elura::world` 管理路由、中间件、场景、玩家状态和 World 注册。
+- `elura::outbox`、`elura::push`、`elura::ownership`、`elura::replay_protection` 和
+  `elura::providers` 管理横切服务。
+- `elura::gameplay` 汇总房间、AOI、模拟、网络同步、复制和测试原语。
+- `elura::prelude` 只保留常用游戏业务类型的便利导入。
+
+对应的子 crate 采用相同所有权：Gateway 在线状态与服务发现端口由 `elura-gateway`
+声明，World 注册端口由 `elura-world` 声明，`elura-core` 只保留双方共享的线协议与领域契约。
 
 ## 示例
 

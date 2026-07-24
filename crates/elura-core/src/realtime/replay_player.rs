@@ -7,7 +7,7 @@ use crate::replay::{ReplayReader, ReplayRecord};
 use crate::state_hash::StateHash;
 use crate::{Error, Result};
 
-use super::{Command, Room, Simulation};
+use super::{AuthoritativeSimulation, Command, Room};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ReplayStats {
@@ -31,7 +31,7 @@ pub trait ReplayDriver<C>: Send + Sync {
 #[async_trait]
 impl<S> ReplayDriver<S::Command> for Room<S>
 where
-    S: Simulation + Sync,
+    S: AuthoritativeSimulation + Sync,
     S::Command: Sync,
 {
     fn room_id(&self) -> &str {

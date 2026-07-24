@@ -3,10 +3,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use elura_core::gateway_world::{
-    WorldDiscovery, WorldRegistrar, WorldRegistration, WorldRouteTarget, WorldRouteUpdater,
-};
 use elura_core::{Error, Result};
+use elura_gateway::discovery::{WorldDiscovery, WorldRouteTarget, WorldRouteUpdater};
+use elura_world::registration::{WorldRegistrar, WorldRegistration};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;

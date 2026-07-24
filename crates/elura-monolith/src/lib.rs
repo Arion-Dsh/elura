@@ -7,15 +7,16 @@ use std::future::Future;
 use std::sync::Arc;
 
 use elura_core::{Error, Result};
+use elura_gateway::discovery::{WorldClient, WorldRequest};
 use elura_gateway::observability::{
     AdminDiagnostics, AdminServer, AdmissionAdmin, GatewayAdmin, Readiness,
 };
 use elura_gateway::transport::GatewayTransport;
 use elura_gateway::{Gateway, GatewayConfig, GatewayServer};
-use elura_runtime::observability::{AdminDiagnostics as WorldAdminDiagnostics, AdminServerConfig};
+use elura_runtime::observability::AdminServerConfig;
 use elura_world::{
-    Route, World, WorldConfig, WorldContext, WorldDiagnostics, WorldHandler, WorldMiddleware,
-    WorldModule, WorldServer,
+    InProcessWorldClient, Route, World, WorldConfig, WorldContext, WorldDiagnostics, WorldHandler,
+    WorldMiddleware, WorldModule, WorldServer,
 };
 use tokio::task::JoinSet;
 
@@ -133,7 +134,7 @@ impl Monolith {
     /// Validates and assembles the in-process Gateway and World runtime.
     pub fn build(self) -> Result<MonolithServer> {
         let world = self.world.build()?;
-        let client = Arc::new(world.in_process_client());
+        let client = Arc::new(MonolithWorldClient(world.in_process_client()));
         let world_diagnostics = world.diagnostics();
         let gateway = Arc::new(self.gateway.world_client(client).build()?);
 
@@ -246,6 +247,19 @@ impl MonolithServer {
     }
 }
 
+struct MonolithWorldClient(InProcessWorldClient);
+
+#[async_trait::async_trait]
+impl WorldClient for MonolithWorldClient {
+    async fn command(&self, request: WorldRequest) -> Result<bytes::Bytes> {
+        self.0.command(request).await
+    }
+
+    async fn readiness(&self) -> Result<()> {
+        self.0.readiness().await
+    }
+}
+
 struct MonolithDiagnostics {
     gateway: Arc<GatewayServer>,
     world: Arc<WorldDiagnostics>,
@@ -262,14 +276,14 @@ impl AdminDiagnostics for MonolithDiagnostics {
         if !output.ends_with('\n') {
             output.push('\n');
         }
-        output.push_str(&WorldAdminDiagnostics::prometheus(self.world.as_ref()).await);
+        output.push_str(&AdminDiagnostics::prometheus(self.world.as_ref()).await);
         output
     }
 
     async fn stats(&self) -> serde_json::Value {
         serde_json::json!({
             "gateway": AdminDiagnostics::stats(self.gateway.as_ref()).await,
-            "world": WorldAdminDiagnostics::stats(self.world.as_ref()).await,
+            "world": AdminDiagnostics::stats(self.world.as_ref()).await,
         })
     }
 
@@ -278,7 +292,7 @@ impl AdminDiagnostics for MonolithDiagnostics {
     }
 
     async fn routes(&self) -> Option<serde_json::Value> {
-        WorldAdminDiagnostics::routes(self.world.as_ref()).await
+        AdminDiagnostics::routes(self.world.as_ref()).await
     }
 }
 

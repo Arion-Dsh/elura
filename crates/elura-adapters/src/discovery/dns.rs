@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use elura_core::gateway_world::{WorldDiscovery, WorldRouteTarget, WorldRouteUpdater};
 use elura_core::{Error, Result};
+use elura_gateway::discovery::{WorldDiscovery, WorldRouteTarget, WorldRouteUpdater};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 

@@ -4,20 +4,19 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use elura_core::Result;
-use elura_core::account_version::{
-    AccountVersionKey, AccountVersionStore, MutableAccountVersionStore,
-};
-use elura_core::gateway_world::{WorldClient, WorldDiscovery, WorldRequest, WorldRouteUpdater};
-use elura_core::online::{
-    DuplicateLoginMode, OnlineAdmission, OnlineAdmissionPolicy, OnlineDirectory, SessionLease,
-};
 use elura_core::ownership::{Assignment, OwnershipResolver};
 use elura_core::push::{PushHandler, PushReceipt, PushRequest, PushTransport};
-use elura_core::session::{
-    Identity, SessionControlEvent, SessionControlHandler, SessionControlTransport,
-};
-use elura_core::ticket::ReplayStore;
+use elura_core::replay_protection::ReplayProtectionStore;
+use elura_core::session::Identity;
+use elura_gateway::discovery::{WorldClient, WorldDiscovery, WorldRequest, WorldRouteUpdater};
 use elura_gateway::observability::AdmissionAdmin;
+use elura_gateway::presence::{
+    DuplicateLoginMode, OnlineAdmission, OnlineAdmissionPolicy, OnlineDirectory, SessionLease,
+};
+use elura_gateway::session::{
+    AccountVersionKey, AccountVersionStore, MutableAccountVersionStore, SessionControlEvent,
+    SessionControlHandler, SessionControlTransport,
+};
 use elura_gateway::transport::{
     AccountVersionSettings, AdmissionController, AdmissionDecision, AdmissionRequest,
     AdmissionSettings,
@@ -30,7 +29,7 @@ use elura_runtime::observability::AdminServerConfig;
 use tokio::sync::watch;
 use uuid::Uuid;
 
-struct ApplicationReplayStore;
+struct ApplicationReplayProtectionStore;
 
 #[allow(dead_code)]
 async fn run_gateway(gateway: Gateway, admin: AdminServerConfig) -> Result<()> {
@@ -38,7 +37,7 @@ async fn run_gateway(gateway: Gateway, admin: AdminServerConfig) -> Result<()> {
 }
 
 #[async_trait]
-impl ReplayStore for ApplicationReplayStore {
+impl ReplayProtectionStore for ApplicationReplayProtectionStore {
     async fn reserve(&self, _ticket_id: &str, _expires_at: u64) -> Result<bool> {
         Ok(true)
     }
@@ -233,7 +232,7 @@ impl GatewayInterceptor for ApplicationInterceptor {
 fn application_can_inject_its_own_gateway_adapters() {
     let admission = Arc::new(ApplicationAdmission);
     let _gateway = Gateway::new(GatewayConfig::default())
-        .replay_store(Arc::new(ApplicationReplayStore))
+        .replay_protection(Arc::new(ApplicationReplayProtectionStore))
         .online_directory(
             Arc::new(ApplicationOnlineDirectory),
             elura_gateway::GatewayOnlineConfig::new(

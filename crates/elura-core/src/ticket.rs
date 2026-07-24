@@ -1,8 +1,5 @@
-use std::collections::HashSet;
-use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, KeyInit, Mac};
@@ -11,8 +8,12 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
+use crate::replay_protection::ReplayProtectionStore;
 use crate::session::Identity;
 use crate::{Error, Result};
+
+#[cfg(test)]
+use crate::replay_protection::MemoryReplayProtectionStore;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -36,32 +37,6 @@ pub enum TicketPurpose {
     Login,
     /// A rotating ticket issued by an authenticated Gateway session.
     Reconnect,
-}
-
-#[async_trait]
-pub trait ReplayStore: Send + Sync {
-    /// Atomically reserves a ticket until `expires_at`.
-    ///
-    /// Exactly one concurrent caller for the same non-expired ID must receive
-    /// `true`; every other caller receives `false`. Backend failures must return
-    /// an error and must never be interpreted as a successful reservation.
-    async fn reserve(&self, ticket_id: &str, expires_at: u64) -> Result<bool>;
-}
-
-#[derive(Default)]
-pub struct MemoryReplayStore {
-    used: Mutex<HashSet<String>>,
-}
-
-#[async_trait]
-impl ReplayStore for MemoryReplayStore {
-    async fn reserve(&self, ticket_id: &str, _expires_at: u64) -> Result<bool> {
-        let mut used = self
-            .used
-            .lock()
-            .map_err(|_| Error::Internal("replay lock poisoned".into()))?;
-        Ok(used.insert(ticket_id.to_owned()))
-    }
 }
 
 pub struct TicketService {
@@ -164,7 +139,11 @@ impl TicketService {
         Ok(format!("{payload}.{}", URL_SAFE_NO_PAD.encode(signature)))
     }
 
-    pub async fn verify(&self, token: &str, replay: &dyn ReplayStore) -> Result<TicketClaims> {
+    pub async fn verify(
+        &self,
+        token: &str,
+        replay: &dyn ReplayProtectionStore,
+    ) -> Result<TicketClaims> {
         self.validate(token)?.consume(replay).await
     }
 
@@ -218,7 +197,7 @@ impl VerifiedTicket {
         &self.claims
     }
 
-    pub async fn consume(self, replay: &dyn ReplayStore) -> Result<TicketClaims> {
+    pub async fn consume(self, replay: &dyn ReplayProtectionStore) -> Result<TicketClaims> {
         if !replay
             .reserve(&self.claims.ticket_id, self.claims.expires_at)
             .await?
@@ -267,7 +246,7 @@ mod tests {
             Duration::from_secs(1_800),
         )
         .unwrap();
-        let replay = MemoryReplayStore::default();
+        let replay = MemoryReplayProtectionStore::default();
         let token = service.issue_login(identity()).unwrap();
         assert_eq!(
             service.validate(&token).unwrap().claims().purpose,
@@ -391,7 +370,7 @@ mod tests {
             Duration::from_secs(1_800),
         )
         .unwrap();
-        let replay = MemoryReplayStore::default();
+        let replay = MemoryReplayProtectionStore::default();
         let token = service.issue_login(identity()).unwrap();
         let verified = service.validate(&token).unwrap();
         assert_eq!(verified.claims().identity, identity());

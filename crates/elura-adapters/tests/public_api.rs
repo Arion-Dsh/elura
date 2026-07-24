@@ -3,14 +3,15 @@
 fn redis_adapters_are_grouped_by_capability() {
     use elura_adapters::account_version::RedisAccountVersionStore;
     use elura_adapters::admission::RedisAdmissionController;
-    use elura_adapters::discovery::{RedisWorldDiscovery, RedisWorldRegistrar};
+    use elura_adapters::discovery::RedisWorldDiscovery;
     use elura_adapters::invalidation::RedisInvalidationBus;
-    use elura_adapters::online::RedisOnlineDirectory;
     use elura_adapters::otp::RedisOtpStore;
     use elura_adapters::outbox::{RedisIdempotencyStore, RedisOutbox};
+    use elura_adapters::presence::RedisOnlineDirectory;
     use elura_adapters::push::RedisStreamPushBus;
     use elura_adapters::redis::RedisHealth;
-    use elura_adapters::replay::RedisReplayStore;
+    use elura_adapters::registration::RedisWorldRegistrar;
+    use elura_adapters::replay_protection::RedisReplayProtectionStore;
     use elura_adapters::session_control::RedisSessionControlBus;
 
     fn type_exists<T>() {}
@@ -26,14 +27,15 @@ fn redis_adapters_are_grouped_by_capability() {
     type_exists::<RedisOutbox>();
     type_exists::<RedisIdempotencyStore>();
     type_exists::<RedisStreamPushBus>();
-    type_exists::<RedisReplayStore>();
+    type_exists::<RedisReplayProtectionStore>();
     type_exists::<RedisSessionControlBus>();
 }
 
 #[cfg(feature = "redis")]
 #[test]
 fn redis_discovery_configs_have_stable_constructors() {
-    use elura_adapters::discovery::{RedisWorldDiscoveryConfig, RedisWorldRegistrationConfig};
+    use elura_adapters::discovery::RedisWorldDiscoveryConfig;
+    use elura_adapters::registration::RedisWorldRegistrationConfig;
 
     let _ = RedisWorldDiscoveryConfig::new("elura:worlds");
     let _ = RedisWorldRegistrationConfig::new("elura:worlds", "127.0.0.1:18000", 1, 1);
@@ -101,10 +103,10 @@ fn sql_adapters_have_simple_public_types() {
     type_exists::<SqlOutbox>();
 }
 
-struct CustomReplayStore;
+struct CustomReplayProtectionStore;
 
 #[async_trait::async_trait]
-impl elura_core::ticket::ReplayStore for CustomReplayStore {
+impl elura_core::replay_protection::ReplayProtectionStore for CustomReplayProtectionStore {
     async fn reserve(&self, _ticket_id: &str, _expires_at: u64) -> elura_core::Result<bool> {
         Ok(true)
     }
@@ -112,6 +114,6 @@ impl elura_core::ticket::ReplayStore for CustomReplayStore {
 
 #[test]
 fn applications_can_supply_their_own_adapter() {
-    fn accepts_replay_store<T: elura_core::ticket::ReplayStore>() {}
-    accepts_replay_store::<CustomReplayStore>();
+    fn accepts_replay_protection<T: elura_core::replay_protection::ReplayProtectionStore>() {}
+    accepts_replay_protection::<CustomReplayProtectionStore>();
 }

@@ -33,7 +33,7 @@ pub struct SessionEvent {
 /// Notifications are process-local and best effort: abrupt Gateway process
 /// termination cannot produce a `Closed` event. Applications that project
 /// durable online state should enqueue events here and reconcile that state
-/// against [`elura_core::online::OnlineDirectory`] lease expiry.
+/// against [`crate::presence::OnlineDirectory`] lease expiry.
 pub trait SessionObserver: Send + Sync + 'static {
     fn observe(&self, event: SessionEvent) -> Result<()>;
 }

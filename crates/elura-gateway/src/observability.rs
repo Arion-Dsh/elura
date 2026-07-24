@@ -19,8 +19,8 @@ use tokio::sync::watch;
 use crate::GatewayServer;
 use crate::protection::CircuitState;
 pub use elura_runtime::observability::{
-    AdminServerConfig, OpenTelemetryLayer, PrometheusText, ReadinessProbe, ensure_trace_id,
-    new_trace_id, open_telemetry_layer,
+    AdminDiagnostics, AdminServerConfig, OpenTelemetryLayer, PrometheusText, Readiness,
+    ReadinessProbe, ensure_trace_id, new_trace_id, open_telemetry_layer,
 };
 
 /// Mutations for a Gateway's admission policy.
@@ -56,40 +56,6 @@ impl GatewayAdmin {
     pub fn with_admission(mut self, admission: Arc<dyn AdmissionAdmin>) -> Self {
         self.admission = Some(admission);
         self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Readiness {
-    pub ready: bool,
-    pub reason: Option<String>,
-}
-
-impl Readiness {
-    pub fn ready() -> Self {
-        Self {
-            ready: true,
-            reason: None,
-        }
-    }
-    pub fn unavailable(reason: impl Into<String>) -> Self {
-        Self {
-            ready: false,
-            reason: Some(reason.into()),
-        }
-    }
-}
-
-#[async_trait]
-pub trait AdminDiagnostics: Send + Sync + 'static {
-    async fn readiness(&self) -> Readiness;
-    async fn prometheus(&self) -> String;
-    async fn stats(&self) -> Value;
-    async fn backend(&self) -> Option<Value> {
-        None
-    }
-    async fn routes(&self) -> Option<Value> {
-        None
     }
 }
 
@@ -655,7 +621,8 @@ mod tests {
 
     use super::*;
     use bytes::Bytes;
-    use elura_core::ticket::{MemoryReplayStore, TicketService};
+    use elura_core::replay_protection::MemoryReplayProtectionStore;
+    use elura_core::ticket::TicketService;
 
     use crate::{GatewayConfig, WorldClient, WorldRequest};
 
@@ -727,7 +694,7 @@ mod tests {
             GatewayServer::new(
                 GatewayConfig::default(),
                 tickets,
-                Arc::new(MemoryReplayStore::default()),
+                Arc::new(MemoryReplayProtectionStore::default()),
                 Arc::new(NeverWorld),
             )
             .unwrap(),

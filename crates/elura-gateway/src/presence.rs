@@ -6,9 +6,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::push::{PushRequest, PushTarget, PushTargetResolver};
-use crate::session::Identity;
-use crate::{Error, Result};
+use elura_core::push::{PushRequest, PushTarget, PushTargetResolver};
+use elura_core::session::Identity;
+use elura_core::{Error, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionLease {
@@ -108,15 +108,6 @@ pub trait OnlineStatsReader: Send + Sync {
     async fn stats(&self, region_id: u32, realm_id: u32) -> Result<OnlineStats>;
 }
 
-/// Complete online-presence backend capability.
-///
-/// This convenience trait is implemented automatically by every type that
-/// provides both [`OnlineDirectory`] and [`OnlineStatsReader`]. APIs that need
-/// only one capability should continue to depend on the narrower trait.
-pub trait OnlineBackend: OnlineDirectory + OnlineStatsReader {}
-
-impl<T> OnlineBackend for T where T: OnlineDirectory + OnlineStatsReader {}
-
 /// Adapts any [`OnlineDirectory`] into provider-neutral Push target routing.
 /// Topic membership updates and target lookup therefore share the same online
 /// directory semantics without coupling the message transport to its backend.
@@ -181,6 +172,9 @@ impl PushTargetResolver for OnlineDirectoryTargetResolver {
                 if let Some(lease) = owner {
                     gateways.insert(lease.gateway_id);
                 }
+            }
+            _ => {
+                return Err(Error::InvalidConfig("unsupported push target".into()));
             }
         }
         let mut gateways = gateways.into_iter().collect::<Vec<_>>();
@@ -558,34 +552,5 @@ mod tests {
             }
         );
         assert_eq!(stats.stats(9, 9).await.unwrap(), OnlineStats::default());
-    }
-
-    #[tokio::test]
-    async fn complete_backend_exposes_directory_and_statistics_capabilities() {
-        let backend: Arc<dyn OnlineBackend> = Arc::new(MemoryOnlineDirectory::default());
-        let directory: Arc<dyn OnlineDirectory> = backend.clone();
-        let stats: Arc<dyn OnlineStatsReader> = backend;
-        let lease = lease(Uuid::new_v4());
-
-        directory
-            .acquire(lease.clone(), policy(DuplicateLoginMode::AllowMultiple))
-            .await
-            .unwrap();
-
-        assert_eq!(
-            directory
-                .session(lease.session_id)
-                .await
-                .unwrap()
-                .map(|registered| registered.session_id),
-            Some(lease.session_id)
-        );
-        assert_eq!(
-            stats.stats(3, 4).await.unwrap(),
-            OnlineStats {
-                session_count: 1,
-                user_count: 1,
-            }
-        );
     }
 }

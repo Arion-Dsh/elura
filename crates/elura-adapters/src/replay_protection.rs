@@ -3,7 +3,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use elura_core::ticket::ReplayStore;
+use elura_core::replay_protection::ReplayProtectionStore;
 use elura_core::{Error, Result};
 
 use crate::redis::{
@@ -12,12 +12,12 @@ use crate::redis::{
 };
 
 #[derive(Clone)]
-pub struct RedisReplayStore {
+pub struct RedisReplayProtectionStore {
     connection: RedisConnection,
     prefix: String,
 }
 
-impl RedisReplayStore {
+impl RedisReplayProtectionStore {
     pub async fn connect(url: &str, prefix: impl Into<String>) -> Result<Self> {
         Self::from_connection(standalone_connection(url).await?, prefix)
     }
@@ -42,8 +42,8 @@ impl RedisReplayStore {
 }
 
 #[async_trait]
-impl ReplayStore for RedisReplayStore {
-    async fn reserve(&self, ticket_id: &str, expires_at: u64) -> Result<bool> {
+impl ReplayProtectionStore for RedisReplayProtectionStore {
+    async fn reserve(&self, key: &str, expires_at: u64) -> Result<bool> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| Error::Unavailable)?
@@ -51,7 +51,7 @@ impl ReplayStore for RedisReplayStore {
         if expires_at <= now {
             return Ok(false);
         }
-        let key = self.key(&format!("ticket:{ticket_id}"));
+        let key = self.key(&format!("replay:{key}"));
         let ttl = expires_at - now;
         let mut connection = self.connection.clone();
         let result: Option<String> = redis::cmd("SET")

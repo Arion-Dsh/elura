@@ -4,18 +4,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::discovery::WorldDiscovery;
 use crate::observability::AdmissionAdmin;
+use crate::presence::{DuplicateLoginMode, OnlineDirectory};
 use crate::transport::{
     AccountVersionSettings, AdmissionController, AdmissionSettings, GatewayTransport,
     RealmAdmission, RegisteredGatewayTransport, SessionObserver, register,
 };
 use elura_core::account_version::AccountVersionStore;
-use elura_core::gateway_world::WorldDiscovery;
-use elura_core::online::{DuplicateLoginMode, OnlineDirectory};
 use elura_core::ownership::OwnershipResolver;
 use elura_core::push::PushTransport;
+use elura_core::replay_protection::{MemoryReplayProtectionStore, ReplayProtectionStore};
 use elura_core::session::SessionControlTransport;
-use elura_core::ticket::{MemoryReplayStore, ReplayStore, TicketService};
+use elura_core::ticket::TicketService;
 use elura_core::{Error, Result};
 use elura_runtime::security::{ClientTlsConfig, InternalToken};
 use serde::{Deserialize, Serialize};
@@ -218,7 +219,7 @@ struct GatewayAccountVersionServices {
 
 #[derive(Default)]
 pub struct GatewayInfrastructure {
-    replay: Option<Arc<dyn ReplayStore>>,
+    replay: Option<Arc<dyn ReplayProtectionStore>>,
     online: Option<GatewayOnlineServices>,
     push: Option<Arc<dyn PushTransport>>,
     session_control: Option<Arc<dyn SessionControlTransport>>,
@@ -238,7 +239,7 @@ impl GatewayInfrastructure {
         Self::default()
     }
 
-    pub fn with_replay_store(mut self, replay: Arc<dyn ReplayStore>) -> Self {
+    pub fn with_replay_protection(mut self, replay: Arc<dyn ReplayProtectionStore>) -> Self {
         self.replay = Some(replay);
         self
     }
@@ -345,7 +346,7 @@ impl GatewayInfrastructure {
         if let Some(online) = &self.online {
             if self.replay.is_none() {
                 return Err(Error::InvalidConfig(
-                    "distributed Gateway infrastructure requires an explicit shared ReplayStore"
+                    "distributed Gateway infrastructure requires an explicit shared ReplayProtectionStore"
                         .into(),
                 ));
             }
@@ -375,7 +376,7 @@ impl GatewayBuilder {
         })
     }
 
-    pub fn with_replay_store(mut self, replay: Arc<dyn ReplayStore>) -> Self {
+    pub fn with_replay_protection(mut self, replay: Arc<dyn ReplayProtectionStore>) -> Self {
         self.infrastructure.replay = Some(replay);
         self
     }
@@ -537,7 +538,7 @@ impl GatewayBuilder {
         };
         let replay = infrastructure
             .replay
-            .unwrap_or_else(|| Arc::new(MemoryReplayStore::default()));
+            .unwrap_or_else(|| Arc::new(MemoryReplayProtectionStore::default()));
         let mut gateway = GatewayServer::new(config.clone(), tickets, replay, world)?;
         if let Some(protection) = config.protection.clone() {
             gateway = gateway.with_protection(protection)?;
@@ -584,8 +585,8 @@ impl GatewayBuilder {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use crate::presence::MemoryOnlineDirectory;
     use bytes::Bytes;
-    use elura_core::online::MemoryOnlineDirectory;
     use elura_core::push::{PushHandler, PushReceipt, PushRequest, PushTransport};
     use elura_core::session::{
         SessionControlEvent, SessionControlHandler, SessionControlTransport,
@@ -729,7 +730,7 @@ mod tests {
     }
 
     #[test]
-    fn infrastructure_rejects_distributed_gateway_without_shared_replay_store() {
+    fn infrastructure_rejects_distributed_gateway_without_shared_replay_protection() {
         let result = builder()
             .with_world_client(Arc::new(ReadyWorld))
             .with_online_directory(
@@ -744,7 +745,7 @@ mod tests {
             .build();
         assert!(matches!(
             result,
-            Err(Error::InvalidConfig(message)) if message.contains("ReplayStore")
+            Err(Error::InvalidConfig(message)) if message.contains("ReplayProtectionStore")
         ));
     }
 
@@ -752,7 +753,7 @@ mod tests {
     fn infrastructure_rejects_cross_node_kick_without_control_transport() {
         let result = builder()
             .with_world_client(Arc::new(ReadyWorld))
-            .with_replay_store(Arc::new(MemoryReplayStore::default()))
+            .with_replay_protection(Arc::new(MemoryReplayProtectionStore::default()))
             .with_online_directory(
                 Arc::new(MemoryOnlineDirectory::default()),
                 GatewayOnlineConfig::new(

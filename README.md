@@ -19,7 +19,8 @@ connections and sessions, while World processes execute commands and manage play
 scale independently or run together as a monolith.
 
 > [!IMPORTANT]
-> Elura is under active `0.x` development. Minor releases may contain breaking API changes.
+> The `0.3.x` API line is frozen. Patch releases preserve public API
+> compatibility; breaking changes are reserved for `0.4.0`.
 
 ## Architecture
 
@@ -69,7 +70,7 @@ Consider another stack when:
 Install the CLI and scaffold an application:
 
 ```bash
-cargo install elura-cli --version 0.2.11
+cargo install elura-cli --version 0.3.0
 elura init all --dir .
 ```
 
@@ -77,11 +78,24 @@ Or add Elura directly:
 
 ```toml
 [dependencies]
-elura = "0.2.11"
+elura = "0.3.0"
 ```
 
 See the [documentation](https://elura.rustyspottedcat.dev/) for concepts, configuration, crate
 features, deployment, and tutorials.
+
+The facade assigns each contract to the runtime or capability that consumes it:
+
+- `elura::gateway` owns connection, discovery, presence, session, and ticket APIs.
+- `elura::world` owns routes, middleware, scenes, players, and World registration.
+- `elura::outbox`, `elura::push`, `elura::ownership`, `elura::replay_protection`, and
+  `elura::providers` own cross-cutting services.
+- `elura::gameplay` groups room, AOI, simulation, netcode, replication, and test primitives.
+- `elura::prelude` remains a small convenience import for common game-facing types.
+
+The corresponding subcrates follow the same ownership: Gateway presence and discovery ports are
+declared by `elura-gateway`, World registration ports by `elura-world`, and `elura-core` retains
+only shared wire/domain contracts.
 
 ## Examples
 

@@ -3,8 +3,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use elura_core::gateway_world::{WorldRouteTarget, WorldRouteUpdater};
 use elura_core::{Error, Result};
+use elura_gateway::discovery::{WorldRouteTarget, WorldRouteUpdater};
 use futures_util::StreamExt;
 use k8s_openapi::api::discovery::v1::EndpointSlice;
 use kube::runtime::watcher::{self, Event};

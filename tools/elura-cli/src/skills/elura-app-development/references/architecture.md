@@ -62,7 +62,7 @@ updates, use QUIC hybrid mode and list only realtime application route IDs in `d
 Authentication and every other route remain on the reliable stream:
 
 ```rust
-use elura::transport::{QuicConfig, QuicMode};
+use elura::gateway::transport::{QuicConfig, QuicMode};
 
 let mut quic = QuicConfig::from_pem_files(
     "0.0.0.0:17003".parse()?,
@@ -182,10 +182,12 @@ For distributed mode, configure matching internal tokens and TLS expectations on
 
 - Common types: `elura::prelude`
 - World APIs: `elura::world`, including `middleware`, `player`, `scene`, and `testing`
-- Gameplay primitives: `elura::room`, `elura::aoi`, `elura::simulation`, `elura::netcode`, `elura::replication`, and `elura::lag_compensation`
-- Network test utilities: `elura::net_sim`
-- Gateway APIs: `elura::gateway`, `elura::transport`, `elura::protection`
+- Gameplay primitives: `elura::gameplay::room`, `elura::gameplay::aoi`, `elura::gameplay::simulation`, `elura::gameplay::netcode`, `elura::gameplay::replication`, and `elura::gameplay::lag_compensation`
+- Network test utilities: `elura::gameplay::net_sim`
+- Gateway APIs: `elura::gateway`, including `admission`, `auth`, `discovery`, `presence`, `session`, `ticket`, `transport`, and `protection`
 - Runtime administration/security: `elura::observability`, `elura::security`, `elura::launch`
-- Distributed contracts: `elura::discovery`
+- Distributed and cross-cutting contracts: `elura::gateway::discovery`,
+  `elura::world::registration`, `elura::push`, `elura::ownership`, and
+  `elura::replay_protection`
 - Infrastructure implementations: `elura::adapters`
 - External identity/payment/notification implementations: `elura::providers`

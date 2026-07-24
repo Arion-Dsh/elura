@@ -2,7 +2,8 @@
 //!
 //! Access tokens are reusable until expiry and are therefore suitable for
 //! independent HTTP requests that may reach different application instances.
-//! Refresh tokens are single-use and reuse [`crate::ticket::ReplayStore`] for
+//! Refresh tokens are single-use and reuse
+//! [`crate::replay_protection::ReplayProtectionStore`] for
 //! distributed rotation and replay protection.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -16,7 +17,7 @@ use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
 use crate::identity::Principal;
-use crate::ticket::ReplayStore;
+use crate::replay_protection::ReplayProtectionStore;
 use crate::{Error, Result};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -187,7 +188,7 @@ impl HttpTokenService {
     pub async fn rotate_refresh(
         &self,
         token: &str,
-        replay: &dyn ReplayStore,
+        replay: &dyn ReplayProtectionStore,
     ) -> Result<HttpTokenPair> {
         let claims = self.validate(token)?;
         if claims.purpose != HttpTokenPurpose::Refresh {
@@ -322,7 +323,7 @@ fn unix_time() -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ticket::MemoryReplayStore;
+    use crate::replay_protection::MemoryReplayProtectionStore;
 
     fn service() -> HttpTokenService {
         HttpTokenService::new(
@@ -369,7 +370,7 @@ mod tests {
     #[tokio::test]
     async fn refresh_tokens_rotate_once() {
         let service = service();
-        let replay = MemoryReplayStore::default();
+        let replay = MemoryReplayProtectionStore::default();
         let pair = service.issue(principal(), ["profile:read"]).unwrap();
         let rotated = service
             .rotate_refresh(&pair.refresh_token, &replay)

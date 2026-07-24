@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
+use crate::discovery::WorldDiscovery;
+use crate::presence::OnlineDirectory;
 use axum::Router;
 use elura_core::account_version::AccountVersionStore;
-use elura_core::gateway_world::WorldDiscovery;
-use elura_core::online::OnlineDirectory;
 use elura_core::ownership::OwnershipResolver;
 use elura_core::push::PushTransport;
+use elura_core::replay_protection::ReplayProtectionStore;
 use elura_core::session::SessionControlTransport;
-use elura_core::ticket::ReplayStore;
 use elura_core::{Error, Result};
 use elura_runtime::observability::AdminServerConfig;
 
@@ -51,8 +51,8 @@ impl Gateway {
         }
     }
 
-    pub fn replay_store(self, replay: Arc<dyn ReplayStore>) -> Self {
-        self.configure(|builder| Ok(builder.with_replay_store(replay)))
+    pub fn replay_protection(self, replay: Arc<dyn ReplayProtectionStore>) -> Self {
+        self.configure(|builder| Ok(builder.with_replay_protection(replay)))
     }
 
     pub fn infrastructure(self, infrastructure: GatewayInfrastructure) -> Self {

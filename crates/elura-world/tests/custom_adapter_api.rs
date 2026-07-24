@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use elura_core::Result;
-use elura_core::gateway_world::WorldRegistrar;
 use elura_core::ownership::{Assignment, OwnershipResolver};
 use elura_core::push::{PushHandler, PushReceipt, PushRequest, PushTransport};
 use elura_runtime::observability::AdminServerConfig;
@@ -11,6 +10,7 @@ use elura_world::player::{
     InvalidationBus, InvalidationHandler, PlayerCache, PlayerCacheConfig, PlayerCacheSynchronizer,
     PlayerInvalidation,
 };
+use elura_world::registration::WorldRegistrar;
 use elura_world::{World, WorldConfig};
 use tokio::sync::watch;
 

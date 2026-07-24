@@ -5,9 +5,9 @@ use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use elura_core::gateway_world::{WorldRouteTarget, WorldRouteUpdater};
 use elura_core::ownership::{Assignment, OwnershipResolver, OwnershipTable, preferred_world};
 use elura_core::{Error, Result};
+use elura_gateway::discovery::{WorldRouteTarget, WorldRouteUpdater};
 use futures_util::StreamExt;
 use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{MicroTime, ObjectMeta};

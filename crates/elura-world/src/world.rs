@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
+use crate::registration::WorldRegistrar;
 use axum::Router;
-use elura_core::gateway_world::WorldRegistrar;
 use elura_core::ownership::OwnershipResolver;
 use elura_core::push::PushTransport;
 use elura_core::{Error, Result};

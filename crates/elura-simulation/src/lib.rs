@@ -87,7 +87,7 @@ pub struct SimulationReport {
 ///
 /// Simulation steps should avoid blocking I/O. Publish durable work after a successful step or use
 /// an application-owned outbox when external side effects are required.
-pub trait Simulation {
+pub trait FixedStepSimulation {
     /// Application error returned by a failed step.
     type Error;
 
@@ -203,14 +203,14 @@ impl FixedStepClock {
         Ok(self.report(committed, dropped_time))
     }
 
-    /// Advances a value implementing the [`Simulation`] trait.
+    /// Advances a value implementing the [`FixedStepSimulation`] trait.
     pub fn advance_simulation<S>(
         &mut self,
         elapsed: Duration,
         simulation: &mut S,
     ) -> std::result::Result<SimulationReport, S::Error>
     where
-        S: Simulation,
+        S: FixedStepSimulation,
     {
         self.advance(elapsed, |step| simulation.step(step))
     }

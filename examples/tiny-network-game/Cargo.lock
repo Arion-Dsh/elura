@@ -779,7 +779,7 @@ checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
 
 [[package]]
 name = "elura"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "elura-core",
  "elura-gateway",
@@ -790,7 +790,7 @@ dependencies = [
 
 [[package]]
 name = "elura-client"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "elura-protocol",
@@ -804,7 +804,7 @@ dependencies = [
 
 [[package]]
 name = "elura-core"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -824,7 +824,7 @@ dependencies = [
 
 [[package]]
 name = "elura-gateway"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -849,9 +849,10 @@ dependencies = [
 
 [[package]]
 name = "elura-monolith"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "async-trait",
+ "bytes",
  "elura-core",
  "elura-gateway",
  "elura-runtime",
@@ -863,7 +864,7 @@ dependencies = [
 
 [[package]]
 name = "elura-protocol"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "prost",
@@ -874,7 +875,7 @@ dependencies = [
 
 [[package]]
 name = "elura-runtime"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -894,7 +895,7 @@ dependencies = [
 
 [[package]]
 name = "elura-spot-demo"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "elura",
  "elura-client",
@@ -907,7 +908,7 @@ dependencies = [
 
 [[package]]
 name = "elura-world"
-version = "0.2.11"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "axum",

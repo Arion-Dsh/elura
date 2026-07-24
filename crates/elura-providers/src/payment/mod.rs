@@ -34,7 +34,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use elura_core::ticket::ReplayStore;
+use elura_core::replay_protection::ReplayProtectionStore;
 use http::{HeaderMap, Method, Uri};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -529,14 +529,14 @@ pub trait PaymentProvider: Send + Sync {
 /// Signature verification plus durable callback replay protection.
 pub struct PaymentNotificationVerifier {
     provider: Arc<dyn PaymentProvider>,
-    replay: Arc<dyn ReplayStore>,
+    replay: Arc<dyn ReplayProtectionStore>,
     replay_ttl: Duration,
 }
 
 impl PaymentNotificationVerifier {
     pub fn new(
         provider: Arc<dyn PaymentProvider>,
-        replay: Arc<dyn ReplayStore>,
+        replay: Arc<dyn ReplayProtectionStore>,
         replay_ttl: Duration,
     ) -> ProviderResult<Self> {
         if replay_ttl.is_zero() {
@@ -711,7 +711,7 @@ impl PaymentRegistry {
     pub fn notification_verifier(
         &self,
         name: &str,
-        replay: Arc<dyn ReplayStore>,
+        replay: Arc<dyn ReplayProtectionStore>,
         replay_ttl: Duration,
     ) -> ProviderResult<PaymentNotificationVerifier> {
         let provider = self.provider(name)?;
@@ -767,7 +767,7 @@ mod optional_unix_millis {
 
 #[cfg(test)]
 mod tests {
-    use elura_core::ticket::MemoryReplayStore;
+    use elura_core::replay_protection::MemoryReplayProtectionStore;
 
     use super::*;
 
@@ -822,7 +822,7 @@ mod tests {
     async fn callback_verifier_consumes_event_once() {
         let verifier = PaymentNotificationVerifier::new(
             Arc::new(CallbackProvider),
-            Arc::new(MemoryReplayStore::default()),
+            Arc::new(MemoryReplayProtectionStore::default()),
             Duration::from_secs(60),
         )
         .unwrap();

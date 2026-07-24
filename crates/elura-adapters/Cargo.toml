@@ -14,8 +14,9 @@ documentation = "https://docs.rs/elura-adapters"
 [features]
 default = []
 full = ["redis", "sql", "kubernetes", "admin"]
+discovery = ["dep:elura-gateway"]
 redis = [
-    "dep:hex", "dep:redis", "dep:serde_json", "dep:elura-gateway", "dep:elura-world",
+    "discovery", "dep:hex", "dep:redis", "dep:serde_json", "dep:elura-world",
 ]
 sql = ["dep:sqlx", "dep:serde_json"]
 kubernetes = [
@@ -23,7 +24,7 @@ kubernetes = [
     "dep:k8s-openapi",
     "dep:kube",
     "dep:tokio-util",
-    "dep:elura-gateway",
+    "discovery",
 ]
 admin = ["dep:axum", "dep:chrono", "dep:serde_json"]
 

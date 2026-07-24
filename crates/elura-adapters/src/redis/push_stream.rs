@@ -2,11 +2,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use elura_core::online::OnlineDirectoryTargetResolver;
 use elura_core::push::{
     PushHandler, PushReceipt, PushRequest, PushTarget, PushTargetResolver, PushTransport,
 };
 use elura_core::{Error, Result};
+use elura_gateway::presence::OnlineDirectoryTargetResolver;
 use redis::AsyncCommands;
 use redis::streams::{
     StreamAutoClaimOptions, StreamAutoClaimReply, StreamId, StreamReadOptions, StreamReadReply,

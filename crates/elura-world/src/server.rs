@@ -15,14 +15,13 @@ use tokio::task::JoinSet;
 use tokio_util::codec::Framed;
 use tracing::{info, warn};
 
-use elura_core::gateway_world::{
-    GatewayWorldCommand, WorldClient, WorldCommand, WorldRegistrar, WorldRequest,
-};
+use elura_core::gateway_world::{GatewayWorldCommand, WorldCommand, WorldRequest};
 use elura_runtime::observability::{AdminServer, AdminServerConfig};
 use elura_runtime::security::{BoxedServiceStream, InternalToken, ServerTlsConfig};
 
 use super::WorldModule;
 use super::config::WorldConfig;
+use super::registration::WorldRegistrar;
 use super::runtime::WorldRuntime;
 use super::{RouteInfo, WorldHarness, WorldStatsSnapshot};
 
@@ -61,9 +60,9 @@ pub struct InProcessWorldClient {
     ready: Arc<AtomicBool>,
 }
 
-#[async_trait::async_trait]
-impl WorldClient for InProcessWorldClient {
-    async fn command(&self, request: WorldRequest) -> Result<bytes::Bytes> {
+impl InProcessWorldClient {
+    /// Executes a Gateway-shaped request directly against the World runtime.
+    pub async fn command(&self, request: WorldRequest) -> Result<bytes::Bytes> {
         if request.request_id == 0 {
             return Err(Error::InvalidFrame(
                 "World command request ID is zero".into(),
@@ -100,7 +99,8 @@ impl WorldClient for InProcessWorldClient {
             .await
     }
 
-    async fn readiness(&self) -> Result<()> {
+    /// Checks whether the in-process World is ready to accept commands.
+    pub async fn readiness(&self) -> Result<()> {
         if self.ready.load(Ordering::Acquire) {
             Ok(())
         } else {

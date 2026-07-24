@@ -3,20 +3,20 @@ use std::convert::Infallible;
 use std::error::Error;
 use std::time::Duration;
 
-use elura::aoi::{AoiConfig, AoiGrid, Point2};
-use elura::lag_compensation::{LagCompensationConfig, LagCompensationHistory};
-use elura::net_sim::{NetSimConfig, SendOutcome, SimulatedLink};
-use elura::netcode::{
+use elura::gameplay::aoi::{AoiConfig, AoiGrid, Point2};
+use elura::gameplay::lag_compensation::{LagCompensationConfig, LagCompensationHistory};
+use elura::gameplay::net_sim::{NetSimConfig, SendOutcome, SimulatedLink};
+use elura::gameplay::netcode::{
     InputReceiver, InputReceiverConfig, InputSender, InputSenderConfig, InterpolationBuffer,
     InterpolationConfig, PredictedEntityConfig, PredictedEntityMatcher, PredictionBuffer,
     PredictionConfig, PredictionKeyGenerator, TickSyncConfig, TickSyncRequest, TickSyncResponse,
     TickSynchronizer,
 };
-use elura::replication::{
+use elura::gameplay::replication::{
     ReplicationConfig, ReplicationReceiver, ReplicationSender, VersionedState,
 };
-use elura::room::{Room, RoomConfig};
-use elura::simulation::{FixedStepClock, SimulationConfig};
+use elura::gameplay::room::{Room, RoomConfig};
+use elura::gameplay::simulation::{FixedStepClock, SimulationConfig};
 
 type ExampleResult<T = ()> = Result<T, Box<dyn Error>>;
 

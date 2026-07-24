@@ -4,28 +4,28 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(feature = "redis")]
-use elura_adapters::online::RedisOnlineDirectory;
-#[cfg(feature = "redis")]
 use elura_adapters::outbox::RedisOutbox;
 #[cfg(feature = "sql")]
 use elura_adapters::outbox::SqlOutbox;
 #[cfg(feature = "redis")]
-use elura_adapters::replay::RedisReplayStore;
+use elura_adapters::presence::RedisOnlineDirectory;
+#[cfg(feature = "redis")]
+use elura_adapters::replay_protection::RedisReplayProtectionStore;
 #[cfg(feature = "redis")]
 use elura_adapters::session_control::{RedisSessionControlBus, RedisSessionControlConfig};
-#[cfg(feature = "redis")]
-use elura_core::online::{
-    DuplicateLoginMode, OnlineAdmission, OnlineAdmissionPolicy, OnlineDirectory, OnlineStats,
-    OnlineStatsReader, SessionLease,
-};
 #[cfg(any(feature = "redis", feature = "sql"))]
 use elura_core::outbox::{OutboxEvent, OutboxStore};
+#[cfg(feature = "redis")]
+use elura_core::replay_protection::ReplayProtectionStore;
 #[cfg(feature = "redis")]
 use elura_core::session::Identity;
 #[cfg(feature = "redis")]
 use elura_core::session::{SessionControlEvent, SessionControlKind, SessionControlTransport};
 #[cfg(feature = "redis")]
-use elura_core::ticket::ReplayStore;
+use elura_gateway::presence::{
+    DuplicateLoginMode, OnlineAdmission, OnlineAdmissionPolicy, OnlineDirectory, OnlineStats,
+    OnlineStatsReader, SessionLease,
+};
 
 #[cfg(any(feature = "redis", feature = "sql"))]
 fn configured_url(name: &str) -> Option<String> {
@@ -87,14 +87,16 @@ async fn redis_outbox_round_trip_when_configured() {
 
 #[tokio::test]
 #[cfg(feature = "redis")]
-async fn redis_replay_store_reserves_a_ticket_once_when_configured() {
+async fn redis_replay_protection_reserves_a_ticket_once_when_configured() {
     let Some(url) = configured_url("ELURA_TEST_REDIS_URL") else {
         return;
     };
-    let store =
-        RedisReplayStore::connect(&url, format!("elura-test-replay-{}", uuid::Uuid::new_v4()))
-            .await
-            .unwrap();
+    let store = RedisReplayProtectionStore::connect(
+        &url,
+        format!("elura-test-replay-{}", uuid::Uuid::new_v4()),
+    )
+    .await
+    .unwrap();
     let expires_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -109,11 +111,11 @@ async fn redis_replay_store_reserves_a_ticket_once_when_configured() {
 
 #[tokio::test]
 #[cfg(feature = "redis")]
-async fn redis_cluster_replay_store_reserves_a_ticket_once_when_configured() {
+async fn redis_cluster_replay_protection_reserves_a_ticket_once_when_configured() {
     let Some(nodes) = configured_cluster_nodes() else {
         return;
     };
-    let store = RedisReplayStore::connect_cluster(
+    let store = RedisReplayProtectionStore::connect_cluster(
         nodes.split(','),
         format!("elura-test-cluster-replay-{}", uuid::Uuid::new_v4()),
     )

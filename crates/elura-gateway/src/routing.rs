@@ -3,8 +3,8 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
+pub use crate::discovery::{WorldRouteTarget, WorldRouteUpdater};
 use async_trait::async_trait;
-pub use elura_core::gateway_world::{WorldRouteTarget, WorldRouteUpdater};
 use elura_core::ownership::Assignment;
 use elura_core::{Error, Result};
 use sha2::{Digest, Sha256};

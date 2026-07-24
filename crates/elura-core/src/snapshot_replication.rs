@@ -1,3 +1,9 @@
+//! Whole-room byte snapshot replication.
+//!
+//! Entity-aware gameplay replication lives in the separate `elura-replication`
+//! crate. This module is the lower-level encoded snapshot stream used by the
+//! authoritative realtime runtime.
+
 use crate::state_hash::StateHash;
 use crate::{Error, Result};
 use async_trait::async_trait;

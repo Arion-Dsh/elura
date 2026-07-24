@@ -129,26 +129,26 @@ placement, distributed ownership, persistence, or recovery; compose those polici
 Enable only the primitives the application uses:
 
 ```toml
-elura = { version = "0.2.11", features = ["world", "room", "aoi", "simulation", "netcode", "replication", "lag-compensation"] }
+elura = { version = "0.3.0", features = ["world", "room", "aoi", "simulation", "netcode", "replication", "lag-compensation"] }
 ```
 
-- `elura::room::Room` stores an application-owned roster, readiness, deterministic leader
+- `elura::gameplay::room::Room` stores an application-owned roster, readiness, deterministic leader
   succession, and `Open -> Active -> Closed` lifecycle. It does not allocate rooms to Worlds or
   broadcast room events.
-- `elura::aoi::AoiGrid` indexes arbitrary entity IDs in two dimensions and returns circular query
+- `elura::gameplay::aoi::AoiGrid` indexes arbitrary entity IDs in two dimensions and returns circular query
   results or `entered`/`left` movement deltas. The application either maps those deltas to Push
   events directly or resolves the complete visible ID set into replication state.
-- `elura::simulation::FixedStepClock` converts elapsed wall time into bounded deterministic steps.
+- `elura::gameplay::simulation::FixedStepClock` converts elapsed wall time into bounded deterministic steps.
   It owns no task or timer and can be advanced from `Scene::tick` or a test.
-- `elura::netcode::TickSynchronizer` estimates the authoritative server Tick from correlated probes
+- `elura::gameplay::netcode::TickSynchronizer` estimates the authoritative server Tick from correlated probes
   and network RTT. `InputSender` retains unacknowledged inputs and includes recent frames in every
   packet; one `InputReceiver` per client stream validates Tick bounds, accepts reordered sequences,
   ignores redundant duplicates, and returns cumulative ACKs.
-- `elura::replication::ReplicationSender` reconciles one observer's complete visible entity states
+- `elura::gameplay::replication::ReplicationSender` reconciles one observer's complete visible entity states
   into ordered Spawn, Despawn, Update, or Keyframe batches. Its matching receiver buffers reordered
-  batches until sequence gaps close and returns cumulative ACKs. Use `elura::aoi::AoiGrid` to select
+  batches until sequence gaps close and returns cumulative ACKs. Use `elura::gameplay::aoi::AoiGrid` to select
   IDs, then resolve those IDs into application-owned `VersionedState` values before reconciliation.
-  `elura::core::replication` remains the lower-level whole-room byte snapshot stream; it does not
+  `elura::core::snapshot_replication` remains the lower-level whole-room byte snapshot stream; it does not
   replace per-observer entity replication.
 
 Keep these values inside the scene that owns their mutable state. Use scene ownership and recovery
@@ -175,19 +175,19 @@ For an authoritative realtime scene, compose them in this order:
 
 ## Prediction, interpolation, and lag compensation
 
-- `elura::netcode::PredictionBuffer` stores locally simulated inputs and predicted states. Feed it
+- `elura::gameplay::netcode::PredictionBuffer` stores locally simulated inputs and predicted states. Feed it
   an authoritative state to discard confirmed inputs and replay the remainder through an
   application-owned deterministic simulation callback.
-- `elura::netcode::InterpolationBuffer` orders remote states by Tick, measures arrival jitter and
+- `elura::gameplay::netcode::InterpolationBuffer` orders remote states by Tick, measures arrival jitter and
   late-sample pressure, adapts a bounded render delay, and returns two states plus `alpha`. The
   application performs position, rotation, animation, or custom interpolation.
-- `elura::netcode::PredictedEntityMatcher` maps a client `PredictionKey` and temporary entity to an
+- `elura::gameplay::netcode::PredictedEntityMatcher` maps a client `PredictionKey` and temporary entity to an
   authoritative replicated entity, or expires the prediction after a bounded Tick timeout.
-- `elura::lag_compensation::LagCompensationHistory` retains immutable application snapshots by
+- `elura::gameplay::lag_compensation::LagCompensationHistory` retains immutable application snapshots by
   authoritative Tick and validates bounded rewind queries. The callback performs application-owned
   ray casts, collision checks, hit validation, and damage rules without mutating the live scene.
 
-Use `elura::net_sim::SimulatedLink` in tests to inject deterministic latency, jitter, loss,
+Use `elura::gameplay::net_sim::SimulatedLink` in tests to inject deterministic latency, jitter, loss,
 duplication, reordering delay, bandwidth serialization, and queue pressure. Supply explicit
 monotonic time and fixed seeds so failures remain reproducible.
 

@@ -10,13 +10,15 @@
 
 use std::time::Duration;
 
-use elura::aoi::{AoiConfig, AoiGrid, Point2};
-use elura::lag_compensation::{LagCompensationConfig, LagCompensationHistory};
-use elura::net_sim::{NetSimConfig, SimulatedLink};
-use elura::netcode::{InputSender, InputSenderConfig, PredictionBuffer, PredictionConfig};
-use elura::replication::{ReplicationConfig, ReplicationSender, VersionedState};
-use elura::room::{Room, RoomConfig};
-use elura::simulation::{FixedStepClock, SimulationConfig};
+use elura::gameplay::aoi::{AoiConfig, AoiGrid, Point2};
+use elura::gameplay::lag_compensation::{LagCompensationConfig, LagCompensationHistory};
+use elura::gameplay::net_sim::{NetSimConfig, SimulatedLink};
+use elura::gameplay::netcode::{
+    InputSender, InputSenderConfig, PredictionBuffer, PredictionConfig,
+};
+use elura::gameplay::replication::{ReplicationConfig, ReplicationSender, VersionedState};
+use elura::gameplay::room::{Room, RoomConfig};
+use elura::gameplay::simulation::{FixedStepClock, SimulationConfig};
 
 #[test]
 fn facade_exposes_opt_in_gameplay_primitives() {

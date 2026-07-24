@@ -17,8 +17,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use elura_core::http_auth::{HttpTokenClaims, HttpTokenPair, HttpTokenService};
 use elura_core::identity::Principal;
+use elura_core::replay_protection::ReplayProtectionStore;
 use elura_core::session::Identity;
-use elura_core::ticket::{ReplayStore, TicketService};
+use elura_core::ticket::TicketService;
 use elura_core::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -269,7 +270,7 @@ pub async fn require_bearer(
 struct HttpAuthApiInner {
     tokens: Arc<HttpTokenService>,
     tickets: Arc<TicketService>,
-    replay: Arc<dyn ReplayStore>,
+    replay: Arc<dyn ReplayProtectionStore>,
     backend: Arc<dyn HttpLoginBackend>,
 }
 
@@ -290,7 +291,7 @@ impl HttpAuthApi {
     pub fn new(
         tokens: Arc<HttpTokenService>,
         tickets: Arc<TicketService>,
-        replay: Arc<dyn ReplayStore>,
+        replay: Arc<dyn ReplayProtectionStore>,
         backend: Arc<dyn HttpLoginBackend>,
     ) -> Self {
         Self {
@@ -521,7 +522,8 @@ mod tests {
 
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
-    use elura_core::ticket::{MemoryReplayStore, TicketPurpose};
+    use elura_core::replay_protection::MemoryReplayProtectionStore;
+    use elura_core::ticket::TicketPurpose;
     use tower::ServiceExt;
 
     use super::*;
@@ -564,7 +566,7 @@ mod tests {
     fn services() -> (
         Arc<HttpTokenService>,
         Arc<TicketService>,
-        Arc<MemoryReplayStore>,
+        Arc<MemoryReplayProtectionStore>,
     ) {
         (
             Arc::new(
@@ -587,7 +589,7 @@ mod tests {
                 )
                 .unwrap(),
             ),
-            Arc::new(MemoryReplayStore::default()),
+            Arc::new(MemoryReplayProtectionStore::default()),
         )
     }
 

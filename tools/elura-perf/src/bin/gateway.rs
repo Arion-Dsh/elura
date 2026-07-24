@@ -5,9 +5,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use elura_adapters::online::RedisOnlineDirectory;
-use elura_adapters::replay::RedisReplayStore;
-use elura_core::online::DuplicateLoginMode;
+use elura_adapters::presence::RedisOnlineDirectory;
+use elura_adapters::replay_protection::RedisReplayProtectionStore;
+use elura_gateway::presence::DuplicateLoginMode;
 use elura_gateway::transport::{
     QuicConfig, TcpConfig, TcpTransport, UdpConfig, WebSocketConfig, WebTransportConfig,
 };
@@ -86,7 +86,7 @@ async fn main() -> AnyResult<()> {
         "elura-rs-perf-ticket-key-at-least-32-bytes-2026",
     );
 
-    let replay = Arc::new(RedisReplayStore::connect(&redis_url, "elura-perf").await?);
+    let replay = Arc::new(RedisReplayProtectionStore::connect(&redis_url, "elura-perf").await?);
     let online = Arc::new(
         RedisOnlineDirectory::connect(&redis_url, "elura-perf:online", Duration::from_secs(60))
             .await?,
@@ -128,7 +128,7 @@ async fn main() -> AnyResult<()> {
         .transport(quic)
         .transport(udp)
         .transport(webtransport)
-        .replay_store(replay)
+        .replay_protection(replay)
         .world_client(world)
         .online_directory(
             online,

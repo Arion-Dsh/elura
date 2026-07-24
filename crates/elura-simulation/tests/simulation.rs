@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use elura_simulation::{
-    FixedStepClock, Simulation, SimulationConfig, SimulationError, SimulationStep,
+    FixedStepClock, FixedStepSimulation, SimulationConfig, SimulationError, SimulationStep,
 };
 
 fn config() -> SimulationConfig {
@@ -80,7 +80,7 @@ struct Counter {
     steps: u32,
 }
 
-impl Simulation for Counter {
+impl FixedStepSimulation for Counter {
     type Error = ();
 
     fn step(&mut self, step: SimulationStep) -> Result<(), Self::Error> {

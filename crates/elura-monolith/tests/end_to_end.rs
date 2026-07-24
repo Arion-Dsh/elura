@@ -6,16 +6,18 @@ use std::time::Duration;
 use bytes::{Bytes, BytesMut};
 use elura_core::ErrorEnvelope;
 use elura_core::account_version::{AccountVersionKey, AccountVersionStore};
-use elura_core::online::{DuplicateLoginMode, MemoryOnlineDirectory, OnlineStatsReader};
 use elura_core::protocol::{
     FIRST_APPLICATION_ROUTE, Frame, FrameCodec, FrameKind, PROTOCOL_IDENTIFIER, ROUTE_AUTHENTICATE,
     ROUTE_HEARTBEAT, ROUTE_RECONNECT, ROUTE_SESSION_CONTROL, SessionControl, SessionControlAction,
 };
+use elura_core::replay_protection::MemoryReplayProtectionStore;
 use elura_core::session::{
     Identity, SessionControlEvent, SessionControlHandler, SessionControlKind,
     SessionControlTransport, SessionState,
 };
-use elura_core::ticket::{MemoryReplayStore, TicketService};
+use elura_core::ticket::TicketService;
+use elura_gateway::discovery::{WorldClient, WorldRequest};
+use elura_gateway::presence::{DuplicateLoginMode, MemoryOnlineDirectory, OnlineStatsReader};
 use elura_gateway::transport::{
     AccountVersionSettings, AdmissionController, AdmissionDecision, AdmissionRejection,
     AdmissionRequest, AdmissionSettings, AdmissionStage, ProxyProtocolConfig, SessionEvent,
@@ -24,7 +26,6 @@ use elura_gateway::transport::{
 use elura_gateway::{
     GatewayConfig, GatewayInterceptContext, GatewayInterceptor, GatewayNext, GatewayOnlineConfig,
     GatewayRequest, GatewayResponse, GatewayServer as Gateway, RouteRateLimit, TcpWorldClient,
-    WorldClient, WorldRequest,
 };
 use elura_monolith::Monolith;
 use elura_runtime::observability::AdminServerConfig;
@@ -164,7 +165,7 @@ async fn gateway_readiness_includes_required_dependencies() {
     let gateway = Gateway::new(
         GatewayConfig::default(),
         tickets,
-        Arc::new(MemoryReplayStore::default()),
+        Arc::new(MemoryReplayProtectionStore::default()),
         Arc::new(NeverWorld),
     )
     .unwrap()
@@ -288,7 +289,7 @@ async fn gateway_drain_allows_an_inflight_request_to_finish() {
                 config.shutdown_timeout = Duration::from_millis(500);
             }),
             tickets,
-            Arc::new(MemoryReplayStore::default()),
+            Arc::new(MemoryReplayProtectionStore::default()),
             world.clone(),
         )
         .unwrap()
@@ -373,7 +374,7 @@ async fn gateway_drain_deadline_forces_remaining_sessions() {
                 config.shutdown_timeout = Duration::from_millis(40);
             }),
             tickets,
-            Arc::new(MemoryReplayStore::default()),
+            Arc::new(MemoryReplayProtectionStore::default()),
             Arc::new(NeverWorld),
         )
         .unwrap()
@@ -457,7 +458,7 @@ async fn stale_ticket_is_rejected_by_authoritative_account_version() {
     let gateway = Gateway::new(
         GatewayConfig::default(),
         tickets,
-        Arc::new(MemoryReplayStore::default()),
+        Arc::new(MemoryReplayProtectionStore::default()),
         Arc::new(NeverWorld),
     )
     .unwrap()
@@ -524,7 +525,7 @@ async fn periodic_account_version_check_disconnects_a_stale_session() {
     let gateway = Gateway::new(
         GatewayConfig::default(),
         tickets,
-        Arc::new(MemoryReplayStore::default()),
+        Arc::new(MemoryReplayProtectionStore::default()),
         Arc::new(NeverWorld),
     )
     .unwrap()
@@ -614,7 +615,7 @@ async fn local_account_version_revocation_targets_only_older_sessions() {
         Gateway::new(
             GatewayConfig::default(),
             tickets,
-            Arc::new(MemoryReplayStore::default()),
+            Arc::new(MemoryReplayProtectionStore::default()),
             Arc::new(NeverWorld),
         )
         .unwrap()
@@ -748,7 +749,7 @@ async fn session_observers_receive_isolated_ordered_lifecycle_events() {
     let gateway = Gateway::new(
         GatewayConfig::default(),
         tickets,
-        Arc::new(MemoryReplayStore::default()),
+        Arc::new(MemoryReplayProtectionStore::default()),
         Arc::new(NeverWorld),
     )
     .unwrap()
@@ -841,7 +842,7 @@ async fn proxy_protocol_source_reaches_gateway_admission() {
     let gateway = Gateway::new(
         GatewayConfig::default(),
         tickets,
-        Arc::new(MemoryReplayStore::default()),
+        Arc::new(MemoryReplayProtectionStore::default()),
         Arc::new(NeverWorld),
     )
     .unwrap()
@@ -910,7 +911,7 @@ async fn admission_checks_connection_and_authenticated_identity() {
     let gateway = Gateway::new(
         GatewayConfig::default(),
         tickets,
-        Arc::new(MemoryReplayStore::default()),
+        Arc::new(MemoryReplayProtectionStore::default()),
         Arc::new(NeverWorld),
     )
     .unwrap()
@@ -989,7 +990,7 @@ async fn websocket_uses_the_gateway_session_engine() {
         Gateway::new(
             GatewayConfig::default(),
             tickets,
-            Arc::new(MemoryReplayStore::default()),
+            Arc::new(MemoryReplayProtectionStore::default()),
             Arc::new(
                 TcpWorldClient::new(world_address, 1 << 20).with_internal_token(internal_token),
             ),
@@ -1129,7 +1130,7 @@ async fn gateway_enforces_realm_capacity_atomically_and_allows_retry() {
     let gateway = Gateway::new(
         GatewayConfig::default(),
         tickets,
-        Arc::new(MemoryReplayStore::default()),
+        Arc::new(MemoryReplayProtectionStore::default()),
         Arc::new(NeverWorld),
     )
     .unwrap()
@@ -1245,7 +1246,7 @@ async fn ticket_gateway_world_round_trip() {
     let gateway = Gateway::new(
         config.clone(),
         tickets,
-        Arc::new(MemoryReplayStore::default()),
+        Arc::new(MemoryReplayProtectionStore::default()),
         Arc::new(
             TcpWorldClient::new(world_address, config.max_payload)
                 .with_internal_token(internal_token),
@@ -1403,7 +1404,7 @@ async fn unauthenticated_connection_is_closed_at_authentication_deadline() {
                 config.heartbeat_interval = Duration::from_secs(1);
             }),
             tickets,
-            Arc::new(MemoryReplayStore::default()),
+            Arc::new(MemoryReplayProtectionStore::default()),
             Arc::new(NeverWorld),
         )
         .unwrap()
@@ -1455,7 +1456,7 @@ async fn duplicate_request_id_is_forwarded_to_the_application_again() {
                 config.heartbeat_interval = Duration::from_secs(1);
             }),
             tickets,
-            Arc::new(MemoryReplayStore::default()),
+            Arc::new(MemoryReplayProtectionStore::default()),
             world.clone(),
         )
         .unwrap()
@@ -1554,7 +1555,7 @@ async fn route_rate_limit_disconnects_after_repeated_violations() {
                 config.heartbeat_interval = Duration::from_secs(1);
             }),
             tickets,
-            Arc::new(MemoryReplayStore::default()),
+            Arc::new(MemoryReplayProtectionStore::default()),
             Arc::new(CountingWorld::default()),
         )
         .unwrap()
@@ -1635,7 +1636,7 @@ async fn reserved_client_routes_disconnect_after_repeated_protocol_violations() 
                 config.max_protocol_violations = 2;
             }),
             tickets,
-            Arc::new(MemoryReplayStore::default()),
+            Arc::new(MemoryReplayProtectionStore::default()),
             Arc::new(CountingWorld::default()),
         )
         .unwrap()
@@ -1710,7 +1711,7 @@ async fn server_heartbeat_accepts_response_and_keeps_session_usable() {
                 config.heartbeat_interval = Duration::from_millis(30);
             }),
             tickets,
-            Arc::new(MemoryReplayStore::default()),
+            Arc::new(MemoryReplayProtectionStore::default()),
             Arc::new(CountingWorld::default()),
         )
         .unwrap()
@@ -1790,7 +1791,7 @@ async fn gateway_publishes_login_and_force_logout_session_control_events() {
                 config.heartbeat_interval = Duration::from_secs(1);
             }),
             tickets,
-            Arc::new(MemoryReplayStore::default()),
+            Arc::new(MemoryReplayProtectionStore::default()),
             Arc::new(CountingWorld::default()),
         )
         .unwrap()

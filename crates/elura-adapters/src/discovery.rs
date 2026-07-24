@@ -6,14 +6,11 @@
 
 mod dns;
 #[cfg(feature = "redis")]
-mod redis;
+pub(crate) mod redis;
 
 pub use dns::{DnsWorldDiscovery, DnsWorldDiscoveryConfig};
 #[cfg(feature = "redis")]
-pub use redis::{
-    RedisWorldDiscovery, RedisWorldDiscoveryConfig, RedisWorldRegistrar,
-    RedisWorldRegistrationConfig,
-};
+pub use redis::{RedisWorldDiscovery, RedisWorldDiscoveryConfig};
 
 #[cfg(feature = "kubernetes")]
 use std::sync::Arc;
@@ -21,9 +18,9 @@ use std::sync::Arc;
 #[cfg(feature = "kubernetes")]
 use elura_core::Result;
 #[cfg(feature = "kubernetes")]
-use elura_core::gateway_world::WorldDiscovery;
+use elura_gateway::discovery::WorldDiscovery;
 #[cfg(feature = "kubernetes")]
-use elura_core::gateway_world::WorldRouteUpdater;
+use elura_gateway::discovery::WorldRouteUpdater;
 #[cfg(feature = "kubernetes")]
 use tokio::sync::watch;
 
