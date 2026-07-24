@@ -1,4 +1,4 @@
-//! Standalone Rust client implementation of the Elura ELR2 protocol.
+//! Standalone Rust implementation of the public Elura ELR2 protocol.
 
 use std::fmt;
 #[cfg(feature = "tokio-codec")]
@@ -11,11 +11,11 @@ use serde::{Deserialize, Serialize};
 use tokio_util::codec::{Decoder, Encoder};
 
 pub const ELR2_MAGIC: u32 = 0x454c5232;
-pub const ELR2_VERSION: u16 = 2;
+pub const ELR2_VERSION: u16 = {{ELR2_VERSION}};
 pub const ELR2_HEADER_LENGTH: usize = 28;
 pub const DEFAULT_MAX_PAYLOAD: usize = 1 << 20;
 pub const ABSOLUTE_MAX_PAYLOAD: usize = 64 << 20;
-pub const PROTOCOL_IDENTIFIER: &str = "elura.v2";
+pub const PROTOCOL_IDENTIFIER: &str = "{{PROTOCOL_IDENTIFIER}}";
 
 pub struct EluraRoutes;
 

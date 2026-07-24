@@ -789,6 +789,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "elura-client"
+version = "0.2.10"
+dependencies = [
+ "bytes",
+ "elura-protocol",
+ "futures-util",
+ "prost",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "elura-core"
 version = "0.2.10"
 dependencies = [
@@ -883,12 +897,10 @@ name = "elura-spot-demo"
 version = "0.2.10"
 dependencies = [
  "elura",
- "elura-protocol",
- "futures-util",
+ "elura-client",
  "prost",
  "spottedcat",
  "tokio",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]

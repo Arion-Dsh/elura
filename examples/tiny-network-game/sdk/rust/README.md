@@ -1,80 +1,111 @@
-# Elura protocol for Rust
+# Elura SDK for Rust
 
-`elura-protocol` is a standalone Rust implementation of the public Elura client
-ELR2 v2 contract. It includes frame encoding, authentication and reconnect
-payloads, error envelopes, heartbeat handling, and Session Control protobuf
-encoding. Optional Tokio stream framing is available through the `tokio-codec`
-feature.
+This repository is the official Rust SDK workspace for Elura. It contains two
+separately publishable crates:
 
-It does not open sockets or dispatch application routes, and it does not depend
-on the server-side `elura` crates or an async runtime by default.
+- `elura-protocol`: runtime-independent ELR2 v2 types, framing,
+  authentication and reconnect payloads, heartbeat helpers, errors, and
+  Session Control encoding.
+- `elura-client`: high-level Tokio TCP client built on `elura-protocol`.
 
 ## Quick start
 
-```rust
-use elura_protocol::{Elr2Codec, EluraProtocol};
-
-let request = EluraProtocol::authenticate(next_request_id, login_ticket)?;
-let message = Elr2Codec::encode(&request)?;
-```
-
-Application routes start at `EluraRoutes::FIRST_APPLICATION`:
-
-```rust
-use elura_protocol::Elr2Frame;
-
-let request = Elr2Frame::request(100, next_request_id, application_payload)?;
-```
-
-Reply to a server heartbeat with:
-
-```rust
-let response = EluraProtocol::heartbeat_response(&heartbeat)?;
-```
-
-For WebSocket and datagram transports, use `Elr2Codec::encode` and
-`Elr2Codec::decode`.
-
-Tokio applications can enable the optional stream adapter:
+Use `elura-client` when the application needs a ready-to-use Gateway client:
 
 ```toml
 [dependencies]
-elura-protocol = { version = "0.2.10", features = ["tokio-codec"] }
-futures-util = { version = "0.3", features = ["sink"] }
-tokio = { version = "1", features = ["net", "macros", "rt-multi-thread"] }
-tokio-util = { version = "0.7", features = ["codec"] }
+elura-client = "0.2.10"
 ```
-
-Then use `Elr2Codec` with `tokio_util::codec::Framed` for TCP or QUIC streams:
 
 ```rust
-use elura_protocol::{Elr2Codec, EluraProtocol};
-use futures_util::{SinkExt, StreamExt};
-use tokio::net::TcpStream;
-use tokio_util::codec::Framed;
+use elura_client::EluraClient;
 
-let stream = TcpStream::connect(gateway_address).await?;
-let mut connection = Framed::new(stream, Elr2Codec::default());
-
-connection
-    .send(EluraProtocol::authenticate(1, login_ticket)?)
-    .await?;
-let response = connection
-    .next()
-    .await
-    .ok_or_else(|| std::io::Error::new(
-        std::io::ErrorKind::UnexpectedEof,
-        "server closed",
-    ))??;
-let authenticated = EluraProtocol::decode_authenticate(&response)?;
+let client = EluraClient::connect(gateway_address, login_ticket).await?;
+let response = client.request(100, application_payload).await?;
 ```
 
-Retain only the latest reconnect ticket, renew it before `expires_in_seconds`,
-and replace it with the ticket returned by the renewal response.
+Typed Protobuf requests can be sent directly:
 
-Run the golden-vector tests:
+```rust
+let snapshot: Snapshot = client
+    .request_protobuf(100, &MoveRequest { dx: 1, dy: 0 })
+    .await?;
+```
+
+The client runs the socket, heartbeats, ticket renewal, response correlation, and
+reconnect state machine in one background Tokio task. `EluraClient` is a cheap,
+cloneable handle, so requests and event handling can run concurrently:
+
+```rust
+let mut events = client.subscribe();
+tokio::spawn(async move {
+    while let Ok(event) = events.recv().await {
+        handle(event);
+    }
+});
+
+let response = client.request(100, application_payload).await?;
+```
+
+Each subscriber receives its own bounded broadcast stream. A subscriber that
+cannot keep up receives Tokio's `Lagged` error instead of applying unbounded
+memory pressure.
+
+Reconnect manually with the latest automatically rotated ticket when automatic
+reconnect is disabled:
+
+```rust
+client.reconnect().await?;
+```
+
+Transport loss is handled by an internal connection state machine with bounded
+exponential backoff and per-client jitter to avoid synchronized reconnect
+storms. An in-flight application request is never replayed automatically; it
+returns `ClientError::RequestInterrupted` after the connection is lost,
+allowing the application to decide whether that operation is safe to retry.
+New requests are accepted after the state returns to
+`ConnectionState::Connected`.
+
+Connection lifecycle changes are available through the event subscription:
+
+```rust
+while let Ok(event) = events.recv().await {
+    match event {
+        ClientEvent::Reconnected => resume_gameplay(),
+        ClientEvent::ReauthenticationRequired => {
+            let login_ticket = fetch_fresh_login_ticket().await?;
+            client.reauthenticate(login_ticket).await?;
+        }
+        event => handle(event),
+    }
+}
+```
+
+Use `subscribe_state()` when code only needs to wait for a state transition.
+`ClientConfig` exposes bounded command, event, and in-flight request capacities
+for application-specific backpressure tuning. Command and event queues default
+to 64 entries; `reconnect_jitter_percent` defaults to 20.
+
+## Protocol-only use
+
+Use `elura-protocol` when integrating another transport or async runtime:
+
+```toml
+[dependencies]
+elura-protocol = "0.2.10"
+```
+
+```rust
+use elura_protocol::{Elr2Codec, Elr2Frame};
+
+let request = Elr2Frame::request(100, request_id, payload)?;
+let bytes = Elr2Codec::encode(&request)?;
+```
+
+## Development
 
 ```sh
-cargo test
-cargo test --features tokio-codec
+cargo test --workspace --all-features
+cargo clippy --workspace --all-features --all-targets -- -D warnings
+cargo bench --workspace
 ```

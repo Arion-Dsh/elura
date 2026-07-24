@@ -4,13 +4,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use elura::prelude::*;
-use elura_protocol::{Elr2Codec, Elr2Frame, EluraProtocol, FrameKind};
+use elura_client::EluraClient;
 use elura_spot_demo::{Arena, DEMO_TICKET_KEY, Move, MoveRequest, ROUTE_MOVE, Snapshot};
-use futures_util::{SinkExt, StreamExt};
-use prost::Message;
-use tokio::net::TcpStream;
 use tokio::time::timeout;
-use tokio_util::codec::Framed;
 
 #[tokio::test]
 async fn two_tcp_clients_share_one_authoritative_snapshot() {
@@ -43,13 +39,13 @@ async fn two_tcp_clients_share_one_authoritative_snapshot() {
         shutdown_rx,
     ));
 
-    let mut player_one = connect_player(gateway_address, 1).await.unwrap();
-    let first = move_player(&mut player_one, 2, 1, 0).await.unwrap();
+    let player_one = connect_player(gateway_address, 1).await.unwrap();
+    let first = move_player(&player_one, 1, 0).await.unwrap();
     assert_eq!(first.players.len(), 1);
 
-    let mut player_two = connect_player(gateway_address, 2).await.unwrap();
-    move_player(&mut player_two, 2, 0, -1).await.unwrap();
-    let shared = move_player(&mut player_one, 3, 0, 0).await.unwrap();
+    let player_two = connect_player(gateway_address, 2).await.unwrap();
+    move_player(&player_two, 0, -1).await.unwrap();
+    let shared = move_player(&player_one, 0, 0).await.unwrap();
     assert_eq!(
         shared
             .players
@@ -77,12 +73,7 @@ fn unused_loopback_port() -> u16 {
         .port()
 }
 
-async fn connect_player(
-    address: SocketAddr,
-    player_id: i64,
-) -> io::Result<Framed<TcpStream, Elr2Codec>> {
-    let stream = connect_when_ready(address).await?;
-    let mut framed = Framed::new(stream, Elr2Codec::default());
+async fn connect_player(address: SocketAddr, player_id: i64) -> io::Result<EluraClient> {
     let tickets = TicketService::new(
         DEMO_TICKET_KEY,
         "game-login",
@@ -100,50 +91,26 @@ async fn connect_player(
             generation: 1,
         })
         .map_err(io::Error::other)?;
-    let response = exchange(
-        &mut framed,
-        EluraProtocol::authenticate(1, ticket).map_err(io::Error::other)?,
-    )
-    .await?;
-    EluraProtocol::decode_authenticate(&response).map_err(io::Error::other)?;
-    Ok(framed)
+    connect_when_ready(address, ticket).await
 }
 
-async fn connect_when_ready(address: SocketAddr) -> io::Result<TcpStream> {
+async fn connect_when_ready(address: SocketAddr, ticket: String) -> io::Result<EluraClient> {
     let mut last_error = None;
     for _ in 0..50 {
-        match TcpStream::connect(address).await {
-            Ok(stream) => return Ok(stream),
+        match EluraClient::connect(address.to_string(), ticket.clone()).await {
+            Ok(client) => return Ok(client),
             Err(error) => last_error = Some(error),
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    Err(last_error.unwrap_or_else(|| io::Error::other("server did not start")))
+    Err(last_error
+        .map(io::Error::other)
+        .unwrap_or_else(|| io::Error::other("server did not start")))
 }
 
-async fn move_player(
-    framed: &mut Framed<TcpStream, Elr2Codec>,
-    request_id: u64,
-    dx: i32,
-    dy: i32,
-) -> io::Result<Snapshot> {
-    let payload = MoveRequest { dx, dy }.encode_to_vec();
-    let response = exchange(
-        framed,
-        Elr2Frame::request(ROUTE_MOVE, request_id, payload).map_err(io::Error::other)?,
-    )
-    .await?;
-    assert_eq!(response.kind, FrameKind::Response);
-    Snapshot::decode(response.payload).map_err(io::Error::other)
-}
-
-async fn exchange(
-    framed: &mut Framed<TcpStream, Elr2Codec>,
-    request: Elr2Frame,
-) -> io::Result<Elr2Frame> {
-    framed.send(request).await?;
-    timeout(Duration::from_secs(2), framed.next())
+async fn move_player(client: &EluraClient, dx: i32, dy: i32) -> io::Result<Snapshot> {
+    client
+        .request_protobuf(ROUTE_MOVE, &MoveRequest { dx, dy })
         .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "response timeout"))?
-        .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "server closed"))?
+        .map_err(io::Error::other)
 }

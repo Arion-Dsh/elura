@@ -1,0 +1,21 @@
+# Rust
+/target/
+
+# TypeScript
+/node_modules/
+/dist/
+
+# C# and IDEs
+**/bin/
+**/obj/
+/.vs/
+*.user
+
+# C++ and CMake
+/build/
+/cmake-build-*/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/

@@ -32,10 +32,14 @@ Run with `--dry-run` before generating into a non-empty project. Do not use `--f
 
 Adapt generated code instead of recreating framework bootstrapping from memory. Keep application policy, configuration loading, adapter selection, and secrets in the upper application.
 
-Generated Rust SDKs are async-runtime independent by default. Use their direct
-`Elr2Codec::encode`/`decode` APIs for message-oriented transports. For Tokio TCP, TLS, or compatible
-QUIC byte streams, enable the SDK's `tokio-codec` feature and add a direct `tokio-util` dependency
-with its `codec` feature before wrapping the stream in `Framed`.
+Generated Rust SDK workspaces contain two crates. Prefer `elura-client` for its
+ready-to-use Tokio TCP client, request correlation, heartbeat handling, push
+queue, automatic reconnect-ticket renewal, and automatic reconnection with the
+latest ticket. Its connection state machine retries transport failures with
+backoff but never replays an interrupted application request. Use the runtime-independent
+`elura-protocol` crate directly for message-oriented transports, another async
+runtime, or custom transport integration; enable its `tokio-codec` feature when
+wrapping a compatible Tokio byte stream in `Framed`.
 
 ## Implement application behavior
 

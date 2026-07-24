@@ -13,15 +13,19 @@ Gateway owns client transports, tickets, sessions, admission, routing to Worlds,
 ## Client SDK transport boundary
 
 Generated client SDKs own the ELR2 wire contract, authentication and reconnect payloads, heartbeat
-handling, and Session Control encoding. The application owns socket creation, timeouts, reconnect
-policy, request-to-response correlation, and application-route payloads.
+handling, and Session Control encoding. The high-level Rust `elura-client` crate additionally owns
+TCP socket creation, timeouts, sequential request-to-response correlation, push queuing, and
+automatic reconnect-ticket rotation. The application still owns application-route payloads and
+decides whether an interrupted request is safe to retry; it does not schedule ticket renewal or
+ordinary transport reconnects. When the Client reports `ReauthenticationRequired`, the application
+must acquire a fresh login ticket and pass it to `reauthenticate`.
 
-The Rust SDK has no async-runtime dependency by default. Use `Elr2Codec::encode` and
-`Elr2Codec::decode` for WebSocket messages, UDP packets, and QUIC Datagrams. For TCP, TLS, or a
-compatible QUIC byte stream in a Tokio application, enable `elura-protocol`'s `tokio-codec`
-feature, depend directly on `tokio-util` with its `codec` feature, and wrap the stream in
-`tokio_util::codec::Framed`. Do not enable the Tokio adapter for message-oriented transports solely
-to access the core codec.
+The Rust SDK workspace separates these concerns into `elura-client` and
+runtime-independent `elura-protocol` crates. Use `Elr2Codec::encode` and
+`Elr2Codec::decode` from `elura-protocol` for WebSocket messages, UDP packets,
+and QUIC Datagrams. For a custom TCP, TLS, or compatible QUIC byte stream in a
+Tokio application, enable `elura-protocol`'s `tokio-codec` feature and wrap the
+stream in `tokio_util::codec::Framed`.
 
 ## Stateful scenes
 

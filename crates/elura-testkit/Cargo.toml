@@ -6,6 +6,8 @@ license.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 readme = "../../README.md"
+homepage.workspace = true
+repository.workspace = true
 description = "Full-stack business testing and load scenarios for Elura"
 documentation = "https://docs.rs/elura-testkit"
 

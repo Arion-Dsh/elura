@@ -237,16 +237,78 @@ const SDK_RUST: &[Artifact] = &[
         template: include_str!("templates/sdk/rust/README.md"),
     },
     Artifact {
-        path: "sdk/rust/src/lib.rs",
-        template: include_str!("templates/sdk/rust/src/lib.rs"),
+        path: "sdk/rust/crates/elura-protocol/Cargo.toml",
+        template: include_str!("templates/sdk/rust/crates/elura-protocol/Cargo.toml.tmpl"),
     },
     Artifact {
-        path: "sdk/rust/tests/golden.rs",
-        template: include_str!("templates/sdk/rust/tests/golden.rs"),
+        path: "sdk/rust/crates/elura-protocol/README.md",
+        template: include_str!("templates/sdk/rust/crates/elura-protocol/README.md"),
     },
     Artifact {
-        path: "sdk/rust/proto/session_control.proto",
+        path: "sdk/rust/crates/elura-protocol/LICENSE-APACHE",
+        template: include_str!("../../../LICENSE-APACHE"),
+    },
+    Artifact {
+        path: "sdk/rust/crates/elura-protocol/LICENSE-MIT",
+        template: include_str!("../../../LICENSE-MIT"),
+    },
+    Artifact {
+        path: "sdk/rust/crates/elura-protocol/src/lib.rs",
+        template: include_str!("templates/sdk/rust/crates/elura-protocol/src/lib.rs"),
+    },
+    Artifact {
+        path: "sdk/rust/crates/elura-protocol/tests/golden.rs",
+        template: include_str!("templates/sdk/rust/crates/elura-protocol/tests/golden.rs"),
+    },
+    Artifact {
+        path: "sdk/rust/crates/elura-protocol/benches/protocol.rs",
+        template: include_str!("templates/sdk/rust/crates/elura-protocol/benches/protocol.rs"),
+    },
+    Artifact {
+        path: "sdk/rust/crates/elura-protocol/proto/session_control.proto",
         template: include_str!("templates/sdk/session_control.proto"),
+    },
+    Artifact {
+        path: "sdk/rust/crates/elura-client/Cargo.toml",
+        template: include_str!("templates/sdk/rust/crates/elura-client/Cargo.toml.tmpl"),
+    },
+    Artifact {
+        path: "sdk/rust/crates/elura-client/README.md",
+        template: include_str!("templates/sdk/rust/crates/elura-client/README.md"),
+    },
+    Artifact {
+        path: "sdk/rust/crates/elura-client/LICENSE-APACHE",
+        template: include_str!("../../../LICENSE-APACHE"),
+    },
+    Artifact {
+        path: "sdk/rust/crates/elura-client/LICENSE-MIT",
+        template: include_str!("../../../LICENSE-MIT"),
+    },
+    Artifact {
+        path: "sdk/rust/crates/elura-client/src/lib.rs",
+        template: include_str!("templates/sdk/rust/crates/elura-client/src/lib.rs"),
+    },
+    Artifact {
+        path: "sdk/rust/crates/elura-client/tests/client.rs",
+        template: include_str!("templates/sdk/rust/crates/elura-client/tests/client.rs"),
+    },
+    Artifact {
+        path: "sdk/rust/crates/elura-client/benches/client.rs",
+        template: include_str!("templates/sdk/rust/crates/elura-client/benches/client.rs"),
+    },
+];
+const SDK_REPOSITORY: &[Artifact] = &[
+    Artifact {
+        path: ".gitignore",
+        template: include_str!("templates/sdk/repository.gitignore"),
+    },
+    Artifact {
+        path: "LICENSE-APACHE",
+        template: include_str!("../../../LICENSE-APACHE"),
+    },
+    Artifact {
+        path: "LICENSE-MIT",
+        template: include_str!("../../../LICENSE-MIT"),
     },
 ];
 const APP_SKILL: &[Artifact] = &[
@@ -273,6 +335,7 @@ struct Options {
     module: String,
     route_id: Option<u32>,
     language: String,
+    standalone: bool,
 }
 
 struct GeneratedArtifact {
@@ -516,9 +579,10 @@ fn target_help(target: &str) -> String {
             "      --id <ID>        Numeric route ID, at least 100 (required)\n",
         ));
     } else if target == "sdk" {
-        help.push_str(
+        help.push_str(concat!(
             "      --language <LANG>  rust, cpp, csharp, typescript, or all [default: all]\n",
-        );
+            "      --standalone       Generate one language at the repository root\n",
+        ));
     }
     help.push_str(concat!(
         "  -d, --dir <PATH>  Output directory [default: .]\n",
@@ -544,6 +608,11 @@ fn parse_options(arguments: &[String]) -> Result<Options, RunError> {
         }
         if argument == "--dry-run" {
             options.dry_run = true;
+            index += 1;
+            continue;
+        }
+        if argument == "--standalone" {
+            options.standalone = true;
             index += 1;
             continue;
         }
@@ -595,6 +664,7 @@ fn parse_skill_options(arguments: &[String]) -> Result<Options, RunError> {
         || !options.module.is_empty()
         || options.route_id.is_some()
         || !options.language.is_empty()
+        || options.standalone
     {
         return Err(usage_error(
             "skill install supports only --dir, --force, and --dry-run",
@@ -620,6 +690,11 @@ fn validate_options(profile: &str, options: &Options) -> Result<(), RunError> {
     if profile != "sdk" && !options.language.is_empty() {
         return Err(usage_error(
             "--language is only supported for the sdk target",
+        ));
+    }
+    if profile != "sdk" && options.standalone {
+        return Err(usage_error(
+            "--standalone is only supported for the sdk target",
         ));
     }
     Ok(())
@@ -726,6 +801,11 @@ fn artifacts(profile: &str, options: &Options) -> Result<Vec<GeneratedArtifact>,
                 )));
             }
         };
+        if options.standalone && language == "all" {
+            return Err(usage_error(
+                "--standalone requires exactly one SDK language",
+            ));
+        }
         let mut selected = Vec::new();
         if matches!(language, "all" | "rust") {
             selected.extend(SDK_RUST);
@@ -739,7 +819,19 @@ fn artifacts(profile: &str, options: &Options) -> Result<Vec<GeneratedArtifact>,
         if matches!(language, "all" | "typescript") {
             selected.extend(SDK_TYPESCRIPT);
         }
-        return Ok(render_artifacts(selected));
+        let mut rendered = render_artifacts(selected);
+        if options.standalone {
+            let prefix = format!("sdk/{language}/");
+            for artifact in &mut rendered {
+                artifact.path = artifact
+                    .path
+                    .strip_prefix(&prefix)
+                    .expect("SDK artifact must use its language prefix")
+                    .into();
+            }
+            rendered.extend(render_artifacts(SDK_REPOSITORY.iter().collect()));
+        }
+        return Ok(rendered);
     }
 
     let mut selected: Vec<&Artifact> = Vec::new();
@@ -1084,7 +1176,10 @@ mod tests {
             "sdk/csharp/Elura.Protocol/EluraProtocol.cs",
             "sdk/typescript/src/elr2.ts",
             "sdk/typescript/src/elura.ts",
-            "sdk/rust/src/lib.rs",
+            "sdk/rust/crates/elura-protocol/src/lib.rs",
+            "sdk/rust/crates/elura-protocol/benches/protocol.rs",
+            "sdk/rust/crates/elura-client/src/lib.rs",
+            "sdk/rust/crates/elura-client/benches/client.rs",
         ] {
             let content = fs::read_to_string(directory.0.join(path)).unwrap();
             assert!(!content.contains("{{"), "unrendered placeholder in {path}");
@@ -1093,7 +1188,7 @@ mod tests {
             "sdk/cpp/include/elura/elr2.hpp",
             "sdk/csharp/Elura.Protocol/EluraProtocol.cs",
             "sdk/typescript/src/elura.ts",
-            "sdk/rust/src/lib.rs",
+            "sdk/rust/crates/elura-protocol/src/lib.rs",
         ] {
             assert!(
                 fs::read_to_string(directory.0.join(path))
@@ -1124,8 +1219,19 @@ mod tests {
             fs::read_to_string(directory.0.join("sdk/typescript/src/elr2.ts")).unwrap();
         let typescript_elura =
             fs::read_to_string(directory.0.join("sdk/typescript/src/elura.ts")).unwrap();
-        let rust_manifest = fs::read_to_string(directory.0.join("sdk/rust/Cargo.toml")).unwrap();
-        let rust = fs::read_to_string(directory.0.join("sdk/rust/src/lib.rs")).unwrap();
+        let rust_manifest = fs::read_to_string(
+            directory
+                .0
+                .join("sdk/rust/crates/elura-protocol/Cargo.toml"),
+        )
+        .unwrap();
+        let rust_workspace = fs::read_to_string(directory.0.join("sdk/rust/Cargo.toml")).unwrap();
+        let rust = fs::read_to_string(
+            directory
+                .0
+                .join("sdk/rust/crates/elura-protocol/src/lib.rs"),
+        )
+        .unwrap();
         assert!(cpp_manifest.contains(&format!("VERSION {version}")));
         assert!(cpp_manifest.contains("cxx_std_20"));
         assert!(!cpp_manifest.contains("cxx_std_17"));
@@ -1135,15 +1241,24 @@ mod tests {
         assert!(csharp.contains("static Elr2Frame Request"));
         assert!(!csharp.contains("record Elr2Frame"));
         assert!(typescript_manifest.contains(&format!("\"version\": \"{version}\"")));
+        assert!(typescript_manifest.contains("\"access\": \"public\""));
         assert!(typescript.contains("export const Elr2"));
         assert!(typescript_elura.contains("export const EluraProtocol"));
-        assert!(rust_manifest.contains(&format!("version = \"{version}\"")));
+        assert!(rust_workspace.contains(&format!("version = \"{version}\"")));
+        assert!(rust_manifest.contains("version.workspace = true"));
         assert!(rust_manifest.contains("default = []"));
         assert!(rust_manifest.contains("tokio-codec = [\"dep:tokio-util\"]"));
         assert!(rust_manifest.contains("optional = true"));
+        assert!(rust_manifest.contains("https://docs.rs/elura-protocol"));
         assert!(rust.contains("pub struct Elr2Frame"));
         assert!(rust.contains("pub struct EluraProtocol"));
         assert!(rust.contains("#[cfg(feature = \"tokio-codec\")]"));
+        assert!(rust_workspace.contains("criterion"));
+        assert!(
+            fs::read_to_string(directory.0.join("sdk/rust/crates/elura-client/src/lib.rs"))
+                .unwrap()
+                .contains("pub fn subscribe(&self)")
+        );
     }
 
     #[test]
@@ -1156,7 +1271,11 @@ mod tests {
                 "sdk/typescript/README.md",
             ),
             ("ts", "sdk/typescript/package.json", "sdk/cpp/README.md"),
-            ("rs", "sdk/rust/Cargo.toml", "sdk/typescript/README.md"),
+            (
+                "rs",
+                "sdk/rust/crates/elura-client/Cargo.toml",
+                "sdk/typescript/README.md",
+            ),
         ] {
             let directory = TestDir::new("sdk-language");
             let dir = directory.0.to_str().unwrap();
@@ -1168,6 +1287,36 @@ mod tests {
         let (code, _, stderr) = execute(&["init", "sdk", "--language", "java"]);
         assert_eq!(code, 2);
         assert!(stderr.contains("unknown SDK language"));
+    }
+
+    #[test]
+    fn init_sdk_generates_a_publishable_standalone_repository() {
+        let directory = TestDir::new("sdk-standalone");
+        let dir = directory.0.to_str().unwrap();
+        let (code, _, stderr) = execute(&[
+            "init",
+            "sdk",
+            "--language",
+            "typescript",
+            "--standalone",
+            "--dir",
+            dir,
+        ]);
+        assert_eq!(code, 0, "{stderr}");
+        assert!(directory.0.join("package.json").exists());
+        assert!(directory.0.join("src/elr2.ts").exists());
+        assert!(directory.0.join("LICENSE-MIT").exists());
+        assert!(directory.0.join("LICENSE-APACHE").exists());
+        assert!(directory.0.join(".gitignore").exists());
+        assert!(!directory.0.join("sdk").exists());
+
+        let package = fs::read_to_string(directory.0.join("package.json")).unwrap();
+        assert!(!package.contains("\"private\": true"));
+        assert!(package.contains("\"access\": \"public\""));
+
+        let (code, _, stderr) = execute(&["init", "sdk", "--standalone", "--dir", dir]);
+        assert_eq!(code, 2);
+        assert!(stderr.contains("requires exactly one SDK language"));
     }
 
     #[test]

@@ -6,6 +6,8 @@ license.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 readme = "../../README.md"
+homepage.workspace = true
+repository.workspace = true
 description = "Application-owned room roster and lifecycle primitives for Elura"
 documentation = "https://docs.rs/elura-room"
 

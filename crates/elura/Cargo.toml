@@ -6,8 +6,12 @@ license.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 readme = "../../README.md"
-description = "Unified facade for the Elura online-game server framework"
+homepage.workspace = true
+repository.workspace = true
+description = "Rust framework for authoritative realtime gameplay and extensible online game services"
 documentation = "https://docs.rs/elura"
+keywords = ["game-server", "game-backend", "multiplayer", "netcode", "realtime"]
+categories = ["game-development", "network-programming", "asynchronous"]
 
 [package.metadata.docs.rs]
 all-features = true

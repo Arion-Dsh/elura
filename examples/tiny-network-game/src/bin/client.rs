@@ -5,17 +5,12 @@ use std::thread;
 use std::time::Duration;
 
 use elura::prelude::{Identity, TicketService};
-use elura_protocol::{Elr2Codec, Elr2Frame, EluraProtocol, FrameKind};
+use elura_client::{ClientError, ClientEvent, ClientResult, ConnectionState, EluraClient};
 use elura_spot_demo::{
     ARENA_HEIGHT, ARENA_WIDTH, DEMO_TICKET_KEY, MOVE_STEP, MoveRequest, PLAYER_SIZE, ROUTE_MOVE,
     SERVER_ADDRESS, Snapshot,
 };
-use futures_util::{SinkExt, StreamExt};
-use prost::Message;
 use spottedcat::{Context, DrawOption, Image, Key, Pt, Spot, Text, WindowConfig};
-use tokio::net::TcpStream;
-use tokio::time::timeout;
-use tokio_util::codec::Framed;
 
 enum NetworkEvent {
     Status(String),
@@ -267,12 +262,38 @@ async fn network_loop(
         }
 
         match connect_and_authenticate(player_id, &address).await {
-            Ok(mut connection) => {
+            Ok(connection) => {
                 let _ = event_tx.send(NetworkEvent::Status("online".into()));
-                let mut request_id = 2;
+                let mut client_events = connection.subscribe();
                 let mut tick = tokio::time::interval(Duration::from_millis(50));
                 loop {
-                    tick.tick().await;
+                    tokio::select! {
+                        event = client_events.recv() => {
+                            match event {
+                                Ok(ClientEvent::Reconnected) => {
+                                    let _ = event_tx.send(NetworkEvent::Status(
+                                        "reconnected - resuming gameplay".into(),
+                                    ));
+                                }
+                                Ok(ClientEvent::ReauthenticationRequired)
+                                | Ok(ClientEvent::ReconnectExhausted)
+                                | Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                                Ok(ClientEvent::Reconnecting { attempt, .. }) => {
+                                    let _ = event_tx.send(NetworkEvent::Status(format!(
+                                        "reconnecting (attempt {attempt})",
+                                    )));
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                    let _ = event_tx.send(NetworkEvent::Status(format!(
+                                        "network event listener skipped {skipped} events",
+                                    )));
+                                }
+                                Ok(_) => {}
+                            }
+                            continue;
+                        }
+                        _ = tick.tick() => {}
+                    }
                     loop {
                         match input_rx.try_recv() {
                             Ok(next) => input = next,
@@ -281,12 +302,17 @@ async fn network_loop(
                         }
                     }
 
-                    match send_move(&mut connection, request_id, input).await {
+                    match send_move(&connection, input).await {
                         Ok(snapshot) => {
                             if event_tx.send(NetworkEvent::Snapshot(snapshot)).is_err() {
                                 return;
                             }
-                            request_id += 1;
+                        }
+                        Err(ClientError::RequestInterrupted)
+                        | Err(ClientError::NotConnected(ConnectionState::Reconnecting)) => {
+                            let _ = event_tx.send(NetworkEvent::Status(
+                                "connection interrupted - waiting to reconnect".into(),
+                            ));
                         }
                         Err(error) => {
                             let _ = event_tx
@@ -304,16 +330,7 @@ async fn network_loop(
     }
 }
 
-async fn connect_and_authenticate(
-    player_id: i64,
-    address: &str,
-) -> io::Result<Framed<TcpStream, Elr2Codec>> {
-    let stream = timeout(Duration::from_secs(2), TcpStream::connect(address))
-        .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "connect timeout"))??;
-    stream.set_nodelay(true)?;
-    let mut connection = Framed::new(stream, Elr2Codec::default());
-
+async fn connect_and_authenticate(player_id: i64, address: &str) -> io::Result<EluraClient> {
     let tickets = TicketService::new(
         DEMO_TICKET_KEY,
         "game-login",
@@ -331,64 +348,17 @@ async fn connect_and_authenticate(
             generation: 1,
         })
         .map_err(io::Error::other)?;
-    let response = exchange(
-        &mut connection,
-        EluraProtocol::authenticate(1, ticket).map_err(io::Error::other)?,
-    )
-    .await?;
-    EluraProtocol::decode_authenticate(&response).map_err(io::Error::other)?;
-    Ok(connection)
+    EluraClient::connect(address, ticket)
+        .await
+        .map_err(io::Error::other)
 }
 
-async fn send_move(
-    connection: &mut Framed<TcpStream, Elr2Codec>,
-    request_id: u64,
-    input: (i32, i32),
-) -> io::Result<Snapshot> {
+async fn send_move(connection: &EluraClient, input: (i32, i32)) -> ClientResult<Snapshot> {
     let request = MoveRequest {
         dx: input.0,
         dy: input.1,
     };
-    let response = exchange(
-        connection,
-        Elr2Frame::request(ROUTE_MOVE, request_id, request.encode_to_vec())
-            .map_err(io::Error::other)?,
-    )
-    .await?;
-    expect_response(&response, request_id)?;
-    Snapshot::decode(response.payload).map_err(io::Error::other)
-}
-
-async fn exchange(
-    connection: &mut Framed<TcpStream, Elr2Codec>,
-    request: Elr2Frame,
-) -> io::Result<Elr2Frame> {
-    timeout(Duration::from_secs(2), connection.send(request))
-        .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "send timeout"))??;
-    timeout(Duration::from_secs(2), connection.next())
-        .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "response timeout"))?
-        .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "server closed"))?
-}
-
-fn expect_response(response: &Elr2Frame, request_id: u64) -> io::Result<()> {
-    if response.request_id != request_id {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "response request ID mismatch",
-        ));
-    }
-    match response.kind {
-        FrameKind::Response => Ok(()),
-        FrameKind::Error => Err(io::Error::other(
-            String::from_utf8_lossy(&response.payload).into_owned(),
-        )),
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "unexpected frame kind",
-        )),
-    }
+    connection.request_protobuf(ROUTE_MOVE, &request).await
 }
 
 fn main() {
