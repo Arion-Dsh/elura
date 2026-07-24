@@ -66,7 +66,7 @@ Elura 适合：
 安装 CLI 并生成应用：
 
 ```bash
-cargo install elura-cli --version 0.3.0
+cargo install elura-cli --version 0.3.1
 elura init all --dir .
 ```
 
@@ -74,7 +74,7 @@ elura init all --dir .
 
 ```toml
 [dependencies]
-elura = "0.3.0"
+elura = "0.3.1"
 ```
 
 概念、配置、crate feature、部署和教程请参阅[项目文档](https://elura.rustyspottedcat.dev/)。

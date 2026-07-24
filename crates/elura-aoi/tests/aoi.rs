@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use elura_aoi::{AoiConfig, AoiError, AoiGrid, Point2};
+use elura_aoi::{AoiConfig, AoiError, AoiGrid, AoiIndex, Point2};
 
 fn grid() -> AoiGrid<u64> {
     let mut config = AoiConfig::default();
@@ -77,4 +77,22 @@ fn bounds_query_work() {
         grid.query(Point2::new(0.0, 0.0), 2.0),
         Err(AoiError::QueryTooLarge { .. })
     ));
+}
+
+#[test]
+fn grid_implements_the_extensible_index_contract() {
+    fn visible<I>(index: &I, observer: &u64) -> Result<Vec<u64>, I::Error>
+    where
+        I: AoiIndex<u64>,
+    {
+        index.visible_to(observer, 10.0)
+    }
+
+    let mut grid = grid();
+    AoiIndex::insert(&mut grid, 1, Point2::new(0.0, 0.0)).unwrap();
+    AoiIndex::insert(&mut grid, 2, Point2::new(5.0, 0.0)).unwrap();
+
+    assert_eq!(visible(&grid, &1).unwrap(), vec![2]);
+    assert_eq!(AoiIndex::len(&grid), 2);
+    assert!(!AoiIndex::is_empty(&grid));
 }

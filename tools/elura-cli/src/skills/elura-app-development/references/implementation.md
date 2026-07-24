@@ -129,15 +129,17 @@ placement, distributed ownership, persistence, or recovery; compose those polici
 Enable only the primitives the application uses:
 
 ```toml
-elura = { version = "0.3.0", features = ["world", "room", "aoi", "simulation", "netcode", "replication", "lag-compensation"] }
+elura = { version = "0.3.1", features = ["world", "room", "aoi", "simulation", "netcode", "replication", "lag-compensation"] }
 ```
 
 - `elura::gameplay::room::Room` stores an application-owned roster, readiness, deterministic leader
   succession, and `Open -> Active -> Closed` lifecycle. It does not allocate rooms to Worlds or
   broadcast room events.
 - `elura::gameplay::aoi::AoiGrid` indexes arbitrary entity IDs in two dimensions and returns circular query
-  results or `entered`/`left` movement deltas. The application either maps those deltas to Push
-  events directly or resolves the complete visible ID set into replication state.
+  results or `entered`/`left` movement deltas. It is the built-in implementation of
+  `elura::gameplay::aoi::AoiIndex`; applications can implement that trait for a different spatial
+  algorithm. The application either maps those deltas to Push events directly or resolves the
+  complete visible ID set into replication state.
 - `elura::gameplay::simulation::FixedStepClock` converts elapsed wall time into bounded deterministic steps.
   It owns no task or timer and can be advanced from `Scene::tick` or a test.
 - `elura::gameplay::netcode::TickSynchronizer` estimates the authoritative server Tick from correlated probes

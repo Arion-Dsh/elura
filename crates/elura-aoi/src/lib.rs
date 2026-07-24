@@ -3,6 +3,9 @@
 //! [`AoiGrid`] tracks application-owned entity identifiers in a sparse uniform grid and computes
 //! circular visibility queries and movement deltas. It deliberately does not send events, impose a
 //! coordinate system, or synchronize access across tasks.
+//!
+//! Applications that need a different spatial algorithm can implement [`AoiIndex`] and keep the
+//! same upper-layer composition.
 
 #![deny(missing_docs)]
 
@@ -128,6 +131,64 @@ impl fmt::Display for AoiError {
 }
 
 impl std::error::Error for AoiError {}
+
+/// Application-extensible area-of-interest index.
+///
+/// The associated position and error types let applications provide indexes with different
+/// coordinate representations and algorithm-specific failures. [`AoiGrid`] is the built-in sparse
+/// uniform-grid implementation.
+pub trait AoiIndex<K> {
+    /// Position representation understood by this index.
+    type Position;
+
+    /// Error returned by index operations.
+    type Error;
+
+    /// Returns the number of indexed entities.
+    fn len(&self) -> usize;
+
+    /// Returns true when no entities are indexed.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns the current entity position.
+    fn position(&self, entity: &K) -> Option<Self::Position>;
+
+    /// Inserts a previously unknown entity.
+    fn insert(&mut self, entity: K, position: Self::Position) -> Result<(), Self::Error>;
+
+    /// Inserts or moves an entity, returning its previous position when present.
+    fn upsert(
+        &mut self,
+        entity: K,
+        position: Self::Position,
+    ) -> Result<Option<Self::Position>, Self::Error>;
+
+    /// Moves an indexed entity and returns its previous position.
+    fn move_entity(
+        &mut self,
+        entity: &K,
+        position: Self::Position,
+    ) -> Result<Self::Position, Self::Error>;
+
+    /// Moves an entity and reports which other entities entered or left its view.
+    fn relocate(
+        &mut self,
+        entity: &K,
+        position: Self::Position,
+        radius: f64,
+    ) -> Result<VisibilityDelta<K>, Self::Error>;
+
+    /// Removes and returns an indexed entity's final position.
+    fn remove(&mut self, entity: &K) -> Result<Self::Position, Self::Error>;
+
+    /// Returns entities inside an area around an arbitrary position.
+    fn query(&self, center: Self::Position, radius: f64) -> Result<Vec<K>, Self::Error>;
+
+    /// Returns other entities visible to one indexed entity.
+    fn visible_to(&self, entity: &K, radius: f64) -> Result<Vec<K>, Self::Error>;
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct Cell {
@@ -357,5 +418,62 @@ where
         if empty {
             self.cells.remove(&cell);
         }
+    }
+}
+
+impl<K> AoiIndex<K> for AoiGrid<K>
+where
+    K: Clone + Eq + Hash,
+{
+    type Position = Point2;
+    type Error = AoiError;
+
+    fn len(&self) -> usize {
+        AoiGrid::len(self)
+    }
+
+    fn position(&self, entity: &K) -> Option<Self::Position> {
+        AoiGrid::position(self, entity)
+    }
+
+    fn insert(&mut self, entity: K, position: Self::Position) -> Result<(), Self::Error> {
+        AoiGrid::insert(self, entity, position)
+    }
+
+    fn upsert(
+        &mut self,
+        entity: K,
+        position: Self::Position,
+    ) -> Result<Option<Self::Position>, Self::Error> {
+        AoiGrid::upsert(self, entity, position)
+    }
+
+    fn move_entity(
+        &mut self,
+        entity: &K,
+        position: Self::Position,
+    ) -> Result<Self::Position, Self::Error> {
+        AoiGrid::move_entity(self, entity, position)
+    }
+
+    fn relocate(
+        &mut self,
+        entity: &K,
+        position: Self::Position,
+        radius: f64,
+    ) -> Result<VisibilityDelta<K>, Self::Error> {
+        AoiGrid::relocate(self, entity, position, radius)
+    }
+
+    fn remove(&mut self, entity: &K) -> Result<Self::Position, Self::Error> {
+        AoiGrid::remove(self, entity)
+    }
+
+    fn query(&self, center: Self::Position, radius: f64) -> Result<Vec<K>, Self::Error> {
+        AoiGrid::query(self, center, radius)
+    }
+
+    fn visible_to(&self, entity: &K, radius: f64) -> Result<Vec<K>, Self::Error> {
+        AoiGrid::visible_to(self, entity, radius)
     }
 }

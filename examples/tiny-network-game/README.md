@@ -2,12 +2,20 @@
 
 This example is a deliberately small authoritative multiplayer arena:
 
-- Elura accepts TCP clients, authenticates demo tickets, routes movement commands, and owns player positions.
+- Elura accepts TCP clients, authenticates demo tickets, and owns the authoritative player state.
+- The server advances at a fixed 20 Hz Tick instead of moving players inside request handlers.
+- Clients send redundant Tick-addressed inputs with cumulative ACKs; the server validates, orders,
+  and de-duplicates each player's input stream.
+- Per-observer replication sends ordered lifecycle/state batches with cumulative ACKs and stream
+  epochs for full resynchronization.
+- The server records a bounded immutable snapshot history on every Tick so application-owned
+  rewind queries can inspect an exact historical state without mutating the live arena.
 - The client uses the checked-in `elura-client` crate in `sdk/rust` for
   connections, authentication, requests, heartbeats, pushes, and reconnect
   tickets.
 - Spottedcat opens the native game window and reads WASD/arrow input.
-- Remote players use snapshot interpolation; the local player uses input prediction with gentle server reconciliation.
+- The local player uses `PredictionBuffer` reconciliation; remote players use the adaptive
+  `InterpolationBuffer`; `TickSynchronizer` estimates the authoritative Tick and input lead.
 - Green is the local player; pink squares are other connected players.
 
 It uses the published `spottedcat` crate from crates.io; no sibling checkout is required.
@@ -23,16 +31,48 @@ the high-level `elura-client` crate. This application uses the latter:
 elura-client = { path = "sdk/rust/crates/elura-client" }
 ```
 
-The high-level client owns the TCP stream and ELR2 Session behavior:
+The high-level client owns the TCP stream and ELR2 Session behavior. The game layer builds an
+Elura input packet, wraps it in the example's Protobuf wire message, and receives input ACK plus
+replication batches in one exchange:
 
 ```rust
-use elura_client::EluraClient;
-
-let client = EluraClient::connect(address, login_ticket).await?;
-let snapshot: Snapshot = client.request_protobuf(ROUTE_MOVE, &request).await?;
+let request = RealtimeRequest::from_input_packet(
+    input_epoch,
+    replication_epoch,
+    input_sender.packet(client_tick),
+    replication_ack,
+    sync_sequence,
+    client_sent_at,
+);
+let response: RealtimeResponse =
+    client.request_protobuf(ROUTE_REALTIME, &request).await?;
 ```
 
 See `src/bin/client.rs` for the game loop integration.
+
+## Realtime data flow
+
+```text
+keyboard input
+  -> InputSender + local PredictionBuffer
+  -> Protobuf request over the Rust SDK
+  -> per-player InputReceiver
+  -> authoritative fixed-Tick Arena
+       `- bounded LagCompensationHistory
+  -> per-observer ReplicationSender
+  -> Protobuf response with InputAck
+  -> ReplicationReceiver
+       |- local PredictionBuffer reconciliation
+       `- remote InterpolationBuffer sampling
+```
+
+The legacy `arena.move` route remains available only so the existing high-concurrency SDK stress
+tests continue to measure request transport without involving the realtime simulation.
+
+This example intentionally contains no reusable combat model. Attack, damage, Hitbox/Hurtbox,
+animation, audio, and camera behavior belong to an upper-layer game. A future game example can use
+the same Tick, input, prediction, replication, and history primitives without adding combat
+semantics to Elura.
 
 ## Run
 
@@ -51,6 +91,8 @@ cargo run --manifest-path examples/tiny-network-game/Cargo.toml --bin client -- 
 
 Move either square with WASD or the arrow keys. The server listens on
 `127.0.0.1:17000`; its local admin endpoint uses port `17001`.
+
+The HUD displays the latest authoritative Tick and measured network RTT.
 
 Both binaries accept an optional address, which is useful for another machine on the LAN:
 

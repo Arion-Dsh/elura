@@ -87,7 +87,7 @@ fn provider_contracts_live_with_their_domain() {
 ))]
 #[test]
 fn gameplay_primitives_share_one_namespace() {
-    use elura::gameplay::aoi::AoiGrid;
+    use elura::gameplay::aoi::{AoiGrid, AoiIndex};
     use elura::gameplay::lag_compensation::LagCompensationHistory;
     use elura::gameplay::net_sim::SimulatedLink;
     use elura::gameplay::netcode::PredictionBuffer;
@@ -96,8 +96,10 @@ fn gameplay_primitives_share_one_namespace() {
     use elura::gameplay::simulation::FixedStepClock;
 
     fn type_exists<T>() {}
+    fn contract_exists<T: ?Sized>() {}
 
     type_exists::<AoiGrid<u64>>();
+    contract_exists::<dyn AoiIndex<u64, Position = (), Error = ()>>();
     type_exists::<FixedStepClock>();
     type_exists::<LagCompensationHistory<u8>>();
     type_exists::<PredictionBuffer<u8, u8>>();

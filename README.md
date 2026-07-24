@@ -70,7 +70,7 @@ Consider another stack when:
 Install the CLI and scaffold an application:
 
 ```bash
-cargo install elura-cli --version 0.3.0
+cargo install elura-cli --version 0.3.1
 elura init all --dir .
 ```
 
@@ -78,7 +78,7 @@ Or add Elura directly:
 
 ```toml
 [dependencies]
-elura = "0.3.0"
+elura = "0.3.1"
 ```
 
 See the [documentation](https://elura.rustyspottedcat.dev/) for concepts, configuration, crate

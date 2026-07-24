@@ -779,12 +779,17 @@ checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
 
 [[package]]
 name = "elura"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "elura-core",
  "elura-gateway",
+ "elura-lag-compensation",
  "elura-monolith",
+ "elura-net-sim",
+ "elura-netcode",
+ "elura-replication",
  "elura-runtime",
+ "elura-simulation",
  "elura-world",
 ]
 
@@ -804,7 +809,7 @@ dependencies = [
 
 [[package]]
 name = "elura-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -824,7 +829,7 @@ dependencies = [
 
 [[package]]
 name = "elura-gateway"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -848,8 +853,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "elura-lag-compensation"
+version = "0.3.1"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "elura-monolith"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -860,6 +872,20 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "elura-net-sim"
+version = "0.3.1"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "elura-netcode"
+version = "0.3.1"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -874,8 +900,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "elura-replication"
+version = "0.3.1"
+dependencies = [
+ "elura-netcode",
+ "serde",
+]
+
+[[package]]
 name = "elura-runtime"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -894,8 +928,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "elura-simulation"
+version = "0.3.1"
+
+[[package]]
 name = "elura-spot-demo"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "elura",
  "elura-client",
@@ -908,7 +946,7 @@ dependencies = [
 
 [[package]]
 name = "elura-world"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "axum",

@@ -1,8 +1,12 @@
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
+use elura::gameplay::simulation::{FixedStepClock, SimulationConfig};
 use elura::prelude::*;
-use elura_spot_demo::{Arena, DEMO_TICKET_KEY, Move, SERVER_ADDRESS};
-use tracing::{debug, info};
+use elura_spot_demo::{
+    Arena, DEMO_TICKET_KEY, Move, Realtime, SERVER_ADDRESS, TICK_DURATION, TICK_RATE,
+};
+use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -22,12 +26,20 @@ async fn main() -> elura::Result<()> {
     tcp.listen = address;
 
     let arena = Arc::new(Mutex::new(Arena::default()));
-    info!(%address, admin = "127.0.0.1:17001", "tiny arena server starting");
+    let tick_task = tokio::spawn(run_fixed_ticks(arena.clone()));
+    let movement_arena = arena.clone();
+    let realtime_arena = arena;
+    info!(
+        %address,
+        admin = "127.0.0.1:17001",
+        tick_rate = TICK_RATE,
+        "tiny arena server starting"
+    );
 
-    Monolith::new(gateway, WorldConfig::default())
+    let result = Monolith::new(gateway, WorldConfig::default())
         .transport(TcpTransport::new(tcp)?)
         .route(Move, move |context: WorldContext, request| {
-            let arena = arena.clone();
+            let arena = movement_arena.clone();
             async move {
                 let mut arena = arena
                     .lock()
@@ -64,12 +76,49 @@ async fn main() -> elura::Result<()> {
                 Ok(snapshot)
             }
         })
+        .route(Realtime, move |context: WorldContext, request| {
+            let arena = realtime_arena.clone();
+            async move {
+                arena
+                    .lock()
+                    .map_err(|_| elura::Error::Internal("arena lock poisoned".into()))?
+                    .exchange(context.identity.user_id, request)
+            }
+        })
         .run(AdminServerConfig::loopback(
             17001,
             "tiny-arena",
             "local-demo",
         ))
-        .await
+        .await;
+    tick_task.abort();
+    result
+}
+
+async fn run_fixed_ticks(arena: Arc<Mutex<Arena>>) {
+    let mut simulation = SimulationConfig::default();
+    simulation.step = TICK_DURATION;
+    let mut clock = FixedStepClock::new(simulation).expect("valid fixed-Tick config");
+    let mut pulse = tokio::time::interval(Duration::from_millis(10));
+    pulse.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut previous = Instant::now();
+
+    loop {
+        pulse.tick().await;
+        let now = Instant::now();
+        let elapsed = now.saturating_duration_since(previous);
+        previous = now;
+        let result = arena
+            .lock()
+            .map_err(|_| elura::Error::Internal("arena lock poisoned".into()))
+            .and_then(|mut arena| {
+                clock.advance(elapsed, |_| arena.advance_tick())?;
+                Ok(())
+            });
+        if let Err(error) = result {
+            error!(%error, "authoritative arena Tick failed");
+        }
+    }
 }
 
 fn init_logging() {

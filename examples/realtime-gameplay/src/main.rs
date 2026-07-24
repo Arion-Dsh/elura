@@ -3,7 +3,7 @@ use std::convert::Infallible;
 use std::error::Error;
 use std::time::Duration;
 
-use elura::gameplay::aoi::{AoiConfig, AoiGrid, Point2};
+use elura::gameplay::aoi::{AoiConfig, AoiGrid, AoiIndex, Point2};
 use elura::gameplay::lag_compensation::{LagCompensationConfig, LagCompensationHistory};
 use elura::gameplay::net_sim::{NetSimConfig, SendOutcome, SimulatedLink};
 use elura::gameplay::netcode::{
@@ -99,12 +99,16 @@ fn redundant_input_and_fixed_tick() -> ExampleResult {
     Ok(())
 }
 
-fn visible_states(
-    aoi: &AoiGrid<u64>,
+fn visible_states<A>(
+    aoi: &A,
     states: &BTreeMap<u64, VersionedState<PlayerState>>,
     observer: u64,
     radius: f64,
-) -> ExampleResult<Vec<(u64, VersionedState<PlayerState>)>> {
+) -> ExampleResult<Vec<(u64, VersionedState<PlayerState>)>>
+where
+    A: AoiIndex<u64>,
+    A::Error: Error + 'static,
+{
     let mut visible = aoi.visible_to(&observer, radius)?;
     visible.push(observer);
     visible.sort_unstable();
