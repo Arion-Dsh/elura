@@ -14,7 +14,7 @@ Use `elura-client` when the application needs a ready-to-use Gateway client:
 
 ```toml
 [dependencies]
-elura-client = "0.2.10"
+elura-client = "0.2.11"
 ```
 
 ```rust
@@ -92,7 +92,7 @@ Use `elura-protocol` when integrating another transport or async runtime:
 
 ```toml
 [dependencies]
-elura-protocol = "0.2.10"
+elura-protocol = "0.2.11"
 ```
 
 ```rust

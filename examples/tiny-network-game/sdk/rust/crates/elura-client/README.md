@@ -26,7 +26,7 @@ dependency:
 
 ```toml
 [dependencies]
-elura-client = "0.2.10"
+elura-client = "0.2.11"
 ```
 
 Run the loopback concurrency benchmark with:

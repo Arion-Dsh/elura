@@ -3,7 +3,7 @@
 This example is a deliberately small authoritative multiplayer arena:
 
 - Elura accepts TCP clients, authenticates demo tickets, routes movement commands, and owns player positions.
-- The client uses the generated `elura-client` crate in `sdk/rust` for
+- The client uses the checked-in `elura-client` crate in `sdk/rust` for
   connections, authentication, requests, heartbeats, pushes, and reconnect
   tickets.
 - Spottedcat opens the native game window and reads WASD/arrow input.
@@ -11,15 +11,12 @@ This example is a deliberately small authoritative multiplayer arena:
 - Green is the local player; pink squares are other connected players.
 
 It uses the published `spottedcat` crate from crates.io; no sibling checkout is required.
-The checked-in Rust SDK is generated with:
-
-```bash
-cargo run -p elura-cli -- init sdk --language rust --dir examples/tiny-network-game
-```
+The checked-in Rust SDK is a vendored copy of the official
+[`elura-sdk-rust`](https://github.com/Arion-Dsh/elura-sdk-rust) repository.
 
 ## Rust SDK workspace
 
-The generated SDK contains the runtime-independent `elura-protocol` crate and
+The SDK contains the runtime-independent `elura-protocol` crate and
 the high-level `elura-client` crate. This application uses the latter:
 
 ```toml
@@ -68,7 +65,7 @@ short-lived login tickets from a trusted login service and load the Gateway key 
 ## Client stress test
 
 The ignored stress test starts a real in-process Gateway, authenticates the
-generated Rust Client, and keeps a configurable number of requests in flight.
+Rust Client, and keeps a configurable number of requests in flight.
 For a short local run:
 
 ```bash

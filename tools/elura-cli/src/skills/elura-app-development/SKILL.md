@@ -24,15 +24,15 @@ Use the smallest generator matching the task:
 elura init all --dir .
 elura init module --name inventory --dir .
 elura init route --module inventory --name list_items --id 120 --dir .
-elura init sdk --language rust --dir .
-elura init sdk --language typescript --dir .
 ```
 
 Run with `--dry-run` before generating into a non-empty project. Do not use `--force` until the conflicting files have been inspected and overwriting them is intended.
 
 Adapt generated code instead of recreating framework bootstrapping from memory. Keep application policy, configuration loading, adapter selection, and secrets in the upper application.
 
-Generated Rust SDK workspaces contain two crates. Prefer `elura-client` for its
+Install client SDKs from their official language-specific repositories; the CLI
+does not generate or install them. Rust SDK workspaces contain two crates.
+Prefer `elura-client` for its
 ready-to-use Tokio TCP client, request correlation, heartbeat handling, push
 queue, automatic reconnect-ticket renewal, and automatic reconnection with the
 latest ticket. Its connection state machine retries transport failures with

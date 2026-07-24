@@ -129,7 +129,7 @@ placement, distributed ownership, persistence, or recovery; compose those polici
 Enable only the primitives the application uses:
 
 ```toml
-elura = { version = "0.2.10", features = ["world", "room", "aoi", "simulation", "netcode", "replication", "lag-compensation"] }
+elura = { version = "0.2.11", features = ["world", "room", "aoi", "simulation", "netcode", "replication", "lag-compensation"] }
 ```
 
 - `elura::room::Room` stores an application-owned roster, readiness, deterministic leader

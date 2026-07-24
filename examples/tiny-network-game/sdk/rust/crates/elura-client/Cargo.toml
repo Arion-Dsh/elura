@@ -16,7 +16,7 @@ categories = ["game-development", "network-programming"]
 
 [dependencies]
 bytes.workspace = true
-elura-protocol = { version = "0.2.10", path = "../elura-protocol", features = ["tokio-codec"] }
+elura-protocol = { version = "0.2.11", path = "../elura-protocol", features = ["tokio-codec"] }
 futures-util.workspace = true
 prost.workspace = true
 serde.workspace = true

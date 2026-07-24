@@ -12,7 +12,7 @@ Gateway owns client transports, tickets, sessions, admission, routing to Worlds,
 
 ## Client SDK transport boundary
 
-Generated client SDKs own the ELR2 wire contract, authentication and reconnect payloads, heartbeat
+Official client SDKs own the ELR2 wire contract, authentication and reconnect payloads, heartbeat
 handling, and Session Control encoding. The high-level Rust `elura-client` crate additionally owns
 TCP socket creation, timeouts, sequential request-to-response correlation, push queuing, and
 automatic reconnect-ticket rotation. The application still owns application-route payloads and

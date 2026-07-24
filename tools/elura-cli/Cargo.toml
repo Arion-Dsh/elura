@@ -14,9 +14,6 @@ include = [
     "src/**",
 ]
 
-[dependencies]
-elura-core.workspace = true
-
 [[bin]]
 name = "elura"
 path = "src/main.rs"

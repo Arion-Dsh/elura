@@ -32,7 +32,7 @@ package:
 	cargo package -p elura-adapters --allow-dirty --list
 	cargo package -p elura-providers --allow-dirty --list
 	cargo package -p elura --allow-dirty --list
-	cargo package -p elura-cli --allow-dirty --list | grep -Fqx 'src/templates/sdk/rust/Cargo.toml.tmpl'
+	cargo package -p elura-cli --allow-dirty --list | grep -Fqx 'src/templates/gateway.main.rs'
 
 examples:
 	cargo fmt --manifest-path examples/realtime-gameplay/Cargo.toml -- --check
