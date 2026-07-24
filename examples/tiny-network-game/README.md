@@ -36,7 +36,7 @@ See `src/bin/client.rs` for the game loop integration.
 
 ## Run
 
-From the `horizon-rs` repository root, start the server:
+From the `elura-rs` repository root, start the server:
 
 ```bash
 cargo run --manifest-path examples/tiny-network-game/Cargo.toml --bin server
