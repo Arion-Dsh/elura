@@ -17,6 +17,12 @@ Elura 是一个面向权威实时玩法与可扩展在线游戏服务的开源�
 与游戏逻辑分离：Gateway 进程负责连接和会话，World 进程执行指令并管理玩家状态。两者可以
 独立扩展，也可以组合成单体进程运行。
 
+<p align="center">
+  <a href="examples/tiny-network-game">
+    <img src=".github/assets/elura-tiny-network-game.gif" alt="两个 Elura 客户端共享服务器权威实时状态" width="960">
+  </a>
+</p>
+
 > [!IMPORTANT]
 > `0.3.x` API 已冻结。补丁版本保持公开 API 兼容；破坏性变更只会进入 `0.4.0`。
 

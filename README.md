@@ -18,6 +18,12 @@ online game services. It separates client connections from game logic: Gateway p
 connections and sessions, while World processes execute commands and manage player state. They can
 scale independently or run together as a monolith.
 
+<p align="center">
+  <a href="examples/tiny-network-game">
+    <img src=".github/assets/elura-tiny-network-game.gif" alt="Two Elura clients sharing authoritative realtime state" width="960">
+  </a>
+</p>
+
 > [!IMPORTANT]
 > The `0.3.x` API line is frozen. Patch releases preserve public API
 > compatibility; breaking changes are reserved for `0.4.0`.
