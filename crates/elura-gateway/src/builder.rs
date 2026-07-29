@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::discovery::WorldDiscovery;
+use crate::discovery::{WorldClient, WorldDiscovery, WorldRouteUpdater};
 use crate::observability::AdmissionAdmin;
 use crate::presence::{DuplicateLoginMode, OnlineDirectory};
 use crate::transport::{
@@ -23,7 +23,6 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     GatewayConfig, GatewayInterceptor, GatewayServer, MemoryWorldRouteDirectory, RouteWorldClient,
-    WorldClient, WorldRouteUpdater,
 };
 
 type DiscoveryBinding = (Arc<dyn WorldDiscovery>, Arc<dyn WorldRouteUpdater>);
@@ -601,7 +600,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl WorldClient for ReadyWorld {
-        async fn command(&self, request: super::super::WorldRequest) -> Result<Bytes> {
+        async fn command(&self, request: elura_core::gateway_world::WorldRequest) -> Result<Bytes> {
             Ok(request.payload)
         }
     }

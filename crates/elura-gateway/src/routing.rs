@@ -5,16 +5,15 @@ use std::sync::{Arc, RwLock};
 
 pub use crate::discovery::{WorldRouteTarget, WorldRouteUpdater};
 use async_trait::async_trait;
+use elura_core::gateway_world::WorldRequest;
 use elura_core::ownership::Assignment;
 use elura_core::{Error, Result};
 use sha2::{Digest, Sha256};
 
 use elura_runtime::security::{ClientTlsConfig, InternalToken};
 
-use super::{
-    TcpWorldClient, WORLD_CONNECTION_IN_FLIGHT, WorldClient, WorldRequest,
-    validate_world_connection_in_flight,
-};
+use super::{TcpWorldClient, WORLD_CONNECTION_IN_FLIGHT, validate_world_connection_in_flight};
+use crate::discovery::WorldClient;
 
 #[async_trait]
 pub(crate) trait WorldRouteDirectory: Send + Sync + 'static {

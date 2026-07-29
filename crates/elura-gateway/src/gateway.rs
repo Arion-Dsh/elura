@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::discovery::WorldDiscovery;
+use crate::discovery::{WorldClient, WorldDiscovery};
 use crate::presence::OnlineDirectory;
 use axum::Router;
 use elura_core::account_version::AccountVersionStore;
@@ -19,7 +19,6 @@ use super::transport::{
 };
 use super::{
     GatewayConfig, GatewayInfrastructure, GatewayInterceptor, GatewayOnlineConfig, GatewayServer,
-    WorldClient,
 };
 
 /// Application-facing Gateway assembly and startup API.
@@ -186,10 +185,10 @@ mod tests {
     use bytes::Bytes;
 
     use super::*;
-    use crate::WorldRequest;
     use crate::transport::{
         TcpConfig, TcpTransport, UdpConfig, WebSocketConfig, WebTransportConfig,
     };
+    use elura_core::gateway_world::WorldRequest;
 
     struct ReadyWorld;
 

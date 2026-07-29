@@ -624,7 +624,9 @@ mod tests {
     use elura_core::replay_protection::MemoryReplayProtectionStore;
     use elura_core::ticket::TicketService;
 
-    use crate::{GatewayConfig, WorldClient, WorldRequest};
+    use crate::GatewayConfig;
+    use crate::discovery::WorldClient;
+    use elura_core::gateway_world::WorldRequest;
 
     struct NeverWorld;
 
